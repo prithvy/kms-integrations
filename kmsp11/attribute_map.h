@@ -17,9 +17,10 @@
 #ifndef KMSP11_ATTRIBUTE_MAP_H_
 #define KMSP11_ATTRIBUTE_MAP_H_
 
+#include <variant>
+
 #include "absl/container/flat_hash_map.h"
 #include "absl/status/statusor.h"
-#include "absl/types/variant.h"
 #include "kmsp11/cryptoki.h"
 #include "kmsp11/openssl.h"
 #include "kmsp11/util/string_utils.h"
@@ -30,7 +31,7 @@ namespace kmsp11 {
 // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/errata01/os/pkcs11-base-v2.40-errata01-os-complete.html#_Toc235002350
 class AttributeMap {
  public:
-  void Put(CK_ATTRIBUTE_TYPE type, absl::string_view value);
+  void Put(CK_ATTRIBUTE_TYPE type, std::string_view value);
   void PutSensitive(CK_ATTRIBUTE_TYPE type);
 
   inline void PutBool(CK_ATTRIBUTE_TYPE type, bool value) {
@@ -55,7 +56,7 @@ class AttributeMap {
   }
 
   bool Contains(const CK_ATTRIBUTE& attribute) const;
-  absl::StatusOr<absl::string_view> Value(CK_ATTRIBUTE_TYPE type) const;
+  absl::StatusOr<std::string_view> Value(CK_ATTRIBUTE_TYPE type) const;
 
  private:
   class SensitiveValue {};
@@ -76,7 +77,7 @@ class AttributeMap {
   //  * Populated attributes have a std::string value that corresponds to the
   //    attribute's definition. For example, a CK_ULONG attribute will be
   //    modeled as a std::string of size sizeof(CK_ULONG).
-  using AttributeValue = absl::variant<std::string, SensitiveValue>;
+  using AttributeValue = std::variant<std::string, SensitiveValue>;
 
   absl::flat_hash_map<CK_ATTRIBUTE_TYPE, AttributeValue> attrs_;
 };

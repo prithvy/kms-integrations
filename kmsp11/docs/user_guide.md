@@ -14,6 +14,7 @@
     5.  [RSA-PKCS1 signing and verification](#rsa-pkcs1-signing-and-verification)
     6.  [RSA-PSS signing and verification](#rsa-pss-signing-and-verification)
 6.  [Limitations](#limitations)
+7.  [Release Notes](#release-notes)
 
 ## Getting started
 
@@ -124,14 +125,14 @@ refresh_interval_secs | int    | No       | 0       | The interval (in seconds) 
 rpc_timeout_secs      | int    | No       | 30      | The timeout (in seconds) for RPCs made to Cloud KMS.
 log_directory         | string | No       | None    | A directory where application logs should be written. If unspecified, application logs will be written to standard error rather than to the filesystem.
 log_filename_suffix   | string | No       | None    | A suffix that will be appended to application log file names.
+generate_certs        | bool   | No       | false   | Whether to generate certificates at runtime for asymmetric KMS keys. The certificates are regenerated each time the library is intiailized, and they do not chain to a public root of trust. They are intended to provide compatibility with the [Sun PKCS #11 JCA Provider][java-p11-guide] which requires that all private keys have an associated certificate. Other use is discouraged.
+require_fips_mode     | bool   | No       | false   | Whether to enable an initialization time check that requires that BoringSSL or OpenSSL have been built in FIPS mode, and that FIPS self checks pass.
 
 #### Experimental global configuration options
 
 Item Name                             | Type | Required | Default | Description
 ------------------------------------- | ---- | -------- | ------- | -----------
 experimental_create_multiple_versions | bool | No       | false   | Enables an experiment that allows multiple versions of a CryptoKey to be created.
-experimental_require_fips_mode        | bool | No       | false   | Enables an experiment that requires that BoringSSL or OpenSSL have been built in FIPS mode, and that FIPS self checks pass.
-experimental_generate_certs           | bool | No       | false   | Whether to generate certificates at runtime for asymmetric KMS keys. The certificates are regenerated each time the library is intiailized, and they do not chain to a public root of trust. They are intended to provide compatibility with the [Sun PKCS #11 JCA Provider][java-p11-guide] which requires that all private keys have an associated certificate. Other use is discouraged.
 
 ### Per token configuration
 
@@ -329,6 +330,24 @@ This means that:
 *   Keys that are created or modified after the library is initialized will be
     stale if `refresh_interval_secs` is unspecified, or else will take up to
     that amount of time to become up-to-date in the library.
+
+## Release Notes
+
+### v1.1
+
+The following changes are included in the v1.1 (March 2022) release:
+
+*   The value for `CKA_EC_POINT` was corrected.
+*   The configuration option `experimental_generate_certs` is now fully
+    supported, and has been renamed to `generate_certs`.
+*   Google now supplies a version of the library where the included BoringSSL
+    has been built in FIPS mode.
+*   The configuration option `experimental_require_fips_mode` is now fully
+    supported, and has been renamed to `require_fips_mode`.
+*   For `CK_RSA_PKCS_OAEP_PARAMS.source`, the value `0` is treated as
+    meaning "no label" for compatibility purposes.
+*   The library must now be built with Bazel v4.2.1.
+*   Several internal dependencies were updated.
 
 [gcp-authn-getting-started]: https://cloud.google.com/docs/authentication/getting-started
 [gcp-authn-prod]: https://cloud.google.com/docs/authentication/production

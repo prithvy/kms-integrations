@@ -4,26 +4,20 @@ workspace(name = "com_google_kmstools")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 
 http_archive(
-    name = "bazel_gazelle",  # v0.23.0 / 2021-03-08
-    sha256 = "62ca106be173579c0a167deb23358fdfe71ffa1e4cfdddf5582af26520f1c66f",
+    name = "bazel_gazelle",  # v0.24.0 / 2021-10-11
+    sha256 = "de69a09dc70417580aabf20a28619bb3ef60d038470c7cf8442fafcf627c21cb",
     urls = [
-        "https://storage.googleapis.com/bazel-mirror/github.com/bazelbuild/bazel-gazelle/releases/download/v0.23.0/bazel-gazelle-v0.23.0.tar.gz",
-        "https://github.com/bazelbuild/bazel-gazelle/releases/download/v0.23.0/bazel-gazelle-v0.23.0.tar.gz",
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-gazelle/releases/download/v0.24.0/bazel-gazelle-v0.24.0.tar.gz",
+        "https://github.com/bazelbuild/bazel-gazelle/releases/download/v0.24.0/bazel-gazelle-v0.24.0.tar.gz",
     ],
 )
 
 http_archive(
-    name = "io_bazel_rules_go",  # v0.26.0 / 2021-03-08
-    # Patch raw PKCS #1 support into rules_go's copy of googleapis.
-    patch_args = [
-        "-E",
-        "-p1",
-    ],
-    patches = ["//:third_party/rules_go.patch"],
-    sha256 = "7c10271940c6bce577d51a075ae77728964db285dac0a46614a7934dc34303e6",
+    name = "io_bazel_rules_go",  # v0.30.0 / 2022-01-24
+    sha256 = "d6b2513456fe2229811da7eb67a444be7785f5323c6708b38d851d2b51e54d83",
     urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/rules_go/releases/download/v0.26.0/rules_go-v0.26.0.tar.gz",
-        "https://github.com/bazelbuild/rules_go/releases/download/v0.26.0/rules_go-v0.26.0.tar.gz",
+        "https://mirror.bazel.build/github.com/bazelbuild/rules_go/releases/download/v0.30.0/rules_go-v0.30.0.zip",
+        "https://github.com/bazelbuild/rules_go/releases/download/v0.30.0/rules_go-v0.30.0.zip",
     ],
 )
 
@@ -53,17 +47,24 @@ http_archive(
 )
 
 http_archive(
-    name = "com_github_jbeder_yaml_cpp",  # 2020-04-29
-    sha256 = "736326d88059b5ebe77cb1d3825ade55c8708898817e067a05931444a7843faa",
-    strip_prefix = "yaml-cpp-9fb51534877d16597cfd94c18890d87af0879d65",
-    url = "https://github.com/jbeder/yaml-cpp/archive/9fb51534877d16597cfd94c18890d87af0879d65.tar.gz",
+    name = "com_github_jbeder_yaml_cpp",  # v0.7.0 // 2021-07-10
+    sha256 = "43e6a9fcb146ad871515f0d0873947e5d497a1c9c60c58cb102a97b47208b7c3",
+    strip_prefix = "yaml-cpp-yaml-cpp-0.7.0",
+    url = "https://github.com/jbeder/yaml-cpp/archive/yaml-cpp-0.7.0.tar.gz",
 )
 
 http_archive(
-    name = "com_google_absl",  # 2021-02-23
-    sha256 = "c1f1c9182a11adecb776a4b9dfa16552bde7f8ffa7f8a3a32d41cc683ae73a84",
-    strip_prefix = "abseil-cpp-998805a4c79d5d7a771f7e5a8ee3cbbbcba04f94",
-    url = "https://github.com/abseil/abseil-cpp/archive/998805a4c79d5d7a771f7e5a8ee3cbbbcba04f94.zip",
+    name = "com_google_absl",  # 20211102.0 // 2021-11-02
+    # Patch is upstreamed at cl/425532352; and should no longer be needed after
+    # that makes it to OSS.
+    patch_args = [
+        "-E",
+        "-p1",
+    ],
+    patches = ["//:third_party/abseil_freebsd_i386.patch"],
+    sha256 = "dcf71b9cba8dc0ca9940c4b316a0c796be8fab42b070bb6b7cab62b48f0e66c4",
+    strip_prefix = "abseil-cpp-20211102.0",
+    url = "https://github.com/abseil/abseil-cpp/archive/20211102.0.tar.gz",
 )
 
 http_archive(
@@ -74,28 +75,22 @@ http_archive(
 )
 
 http_archive(
-    name = "com_google_protobuf",  # 2021-03-02
-    sha256 = "c006a8b936442237f8b4e08e9758c5bf47affb44c4c99130d1c3011b3ac98095",
-    strip_prefix = "protobuf-3172ab8ff97aab005d7734627409faa166174232",
-    url = "https://github.com/protocolbuffers/protobuf/archive/3172ab8ff97aab005d7734627409faa166174232.zip",
+    name = "com_google_protobuf",  # v3.19.4 // 2022-01-2
+    sha256 = "3bd7828aa5af4b13b99c191e8b1e884ebfa9ad371b0ce264605d347f135d2568",
+    strip_prefix = "protobuf-3.19.4",
+    url = "https://github.com/protocolbuffers/protobuf/archive/v3.19.4.tar.gz",
 )
 
-# Keep this sync'd to the version used in rules_go, above. Otherwise, we're
-# working with two versions of the same repo.
-# https://github.com/bazelbuild/rules_go/blob/v0.26.0/go/private/repositories.bzl#L243
+# In general it's best to keep this sync'd with the version used in rules_go,
+# above. Otherwise, we're working with two versions of the same repo.
+# https://github.com/bazelbuild/rules_go/blob/v0.30.0/go/private/repositories.bzl#L259
 http_archive(
-    name = "com_google_googleapis",  # 2021-03-05
-    # Patch raw PKCS #1 support into googleapis.
-    patch_args = [
-        "-E",
-        "-p1",
-    ],
-    patches = ["//:third_party/googleapis.patch"],
-    sha256 = "711bc79bd40406dda685a8633f7478979baabaab19eeac664d53f7621866bebc",
-    strip_prefix = "googleapis-d4cd8d96ed6eb5dd7c997aab68a1d6bb0825090c",
+    name = "com_google_googleapis",  # 2022-01-24
+    sha256 = "ad0a426b3cf0a8464c495627286c1cefdebefdabb96cc256aaeac9f501665cdd",
+    strip_prefix = "googleapis-d12b615374583712e7832c914d1fbef8c507f10f",
     urls = [
-        "https://mirror.bazel.build/github.com/googleapis/googleapis/archive/d4cd8d96ed6eb5dd7c997aab68a1d6bb0825090c.zip",
-        "https://github.com/googleapis/googleapis/archive/d4cd8d96ed6eb5dd7c997aab68a1d6bb0825090c.zip",
+        "https://mirror.bazel.build/github.com/googleapis/googleapis/archive/d12b615374583712e7832c914d1fbef8c507f10f.zip",
+        "https://github.com/googleapis/googleapis/archive/d12b615374583712e7832c914d1fbef8c507f10f.zip",
     ],
 )
 
@@ -121,10 +116,10 @@ http_file(
 )
 
 http_archive(
-    name = "rules_jvm_external",  # v4.0 // 2021-01-06
-    sha256 = "31d226a6b3f5362b59d261abf9601116094ea4ae2aa9f28789b6c105e4cada68",
-    strip_prefix = "rules_jvm_external-4.0",
-    url = "https://github.com/bazelbuild/rules_jvm_external/archive/4.0.tar.gz",
+    name = "rules_jvm_external",  # v4.2 // 2021-11-23
+    sha256 = "2cd77de091e5376afaf9cc391c15f093ebd0105192373b334f0a855d89092ad5",
+    strip_prefix = "rules_jvm_external-4.2",
+    url = "https://github.com/bazelbuild/rules_jvm_external/archive/4.2.tar.gz",
 )
 
 http_archive(
@@ -178,9 +173,9 @@ load("@rules_jvm_external//:defs.bzl", "maven_install")
 
 maven_install(
     artifacts = [
-        "com.google.cloud:google-cloud-kms:1.39.0",
-        "com.google.guava:guava:28.2-jre",
-        "junit:junit:4.13",
+        "com.google.cloud:google-cloud-kms:2.4.0",
+        "com.google.guava:guava:31.0.1-jre",
+        "junit:junit:4.13.2",
     ],
     fetch_sources = True,
     repositories = [
@@ -189,28 +184,22 @@ maven_install(
 )
 
 ## Golang
+load("//:go.bzl", "go_repositories")
+
+# gazelle:repository_macro go.bzl%go_repositories
+go_repositories()
+
 load("@io_bazel_rules_go//go:deps.bzl", "go_register_toolchains", "go_rules_dependencies")
 
 go_rules_dependencies()
 
-go_register_toolchains("1.16.1")
-
-load("@io_bazel_rules_go//extras:embed_data_deps.bzl", "go_embed_data_dependencies")
-
-go_embed_data_dependencies()
-
-## Protobuf
-load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
-
-protobuf_deps()
-
-## Gazelle (go + bazel)
+go_register_toolchains("1.17.6")
 
 load("@bazel_gazelle//:deps.bzl", "gazelle_dependencies")
 
 gazelle_dependencies()
 
-load("//:go.bzl", "go_repositories")
+## Protobuf
+load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
 
-# gazelle:repository_macro go.bzl%go_repositories
-go_repositories()
+protobuf_deps()

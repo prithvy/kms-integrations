@@ -40,9 +40,13 @@ absl::Status ValidateRsaOaepParameters(Object* key, void* parameters,
   RETURN_IF_ERROR(EnsureHashMatches(params->hashAlg, digest));
   RETURN_IF_ERROR(EnsureMgf1HashMatches(params->mgf, digest));
 
-  if (params->source != CKZ_DATA_SPECIFIED) {
-    return InvalidMechanismParamError(
-        "source for OAEP must be CKZ_DATA_SPECIFIED", SOURCE_LOCATION);
+  switch (params->source) {
+    case 0: // For compatibility. See b/217419373.
+    case CKZ_DATA_SPECIFIED:
+      break;
+    default:
+      return InvalidMechanismParamError(
+          "source for OAEP must be 0 or CKZ_DATA_SPECIFIED", SOURCE_LOCATION);
   }
   if (params->pSourceData != nullptr || params->ulSourceDataLen != 0) {
     return InvalidMechanismParamError("OAEP labels are not supported",
@@ -61,7 +65,7 @@ absl::StatusOr<std::unique_ptr<EncrypterInterface>> RsaOaepEncrypter::New(
   RETURN_IF_ERROR(ValidateRsaOaepParameters(key.get(), mechanism->pParameter,
                                             mechanism->ulParameterLen));
 
-  ASSIGN_OR_RETURN(absl::string_view key_der,
+  ASSIGN_OR_RETURN(std::string_view key_der,
                    key->attributes().Value(CKA_PUBLIC_KEY_INFO));
   ASSIGN_OR_RETURN(bssl::UniquePtr<EVP_PKEY> parsed_key,
                    ParseX509PublicKeyDer(key_der));
@@ -125,7 +129,7 @@ absl::StatusOr<absl::Span<const uint8_t>> RsaOaepDecrypter::Decrypt(
 
   kms_v1::AsymmetricDecryptResponse resp = std::move(resp_or).value();
 
-  result_ = absl::make_unique<RsaOaepDecryptResult>(
+  result_ = std::make_unique<RsaOaepDecryptResult>(
       ciphertext,
       std::unique_ptr<std::string, ZeroDelete>(resp.release_plaintext()));
   return result_->plaintext();

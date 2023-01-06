@@ -108,7 +108,7 @@ absl::Status Initialize(CK_VOID_PTR pInitArgs) {
   }
 
   CHECK(kCryptoLibraryInitialized);
-  if (config.experimental_require_fips_mode()) {
+  if (config.require_fips_mode()) {
     absl::Status self_test_result = CheckFipsSelfTest();
     CHECK(self_test_result.ok()) << "FIPS tests failed: " << self_test_result;
   }
@@ -348,7 +348,7 @@ absl::Status GetAttributeValue(CK_SESSION_HANDLE hSession,
 
   absl::Status result = absl::OkStatus();
   for (CK_ATTRIBUTE& attr : absl::MakeSpan(pTemplate, ulCount)) {
-    absl::StatusOr<absl::string_view> value =
+    absl::StatusOr<std::string_view> value =
         object->attributes().Value(attr.type);
 
     // C_GetAttributeValue cases 1 and 2

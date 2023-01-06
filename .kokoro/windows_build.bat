@@ -23,7 +23,7 @@ cd "%PROJECT_ROOT%"
 set RESULTS_DIR=%KOKORO_ARTIFACTS_DIR%\results
 mkdir "%RESULTS_DIR%"
 
-choco install -y bazel --version 4.0.0
+choco install -y bazel --version 4.2.1
 
 :: Configure user.bazelrc with remote build caching options
 copy .kokoro\remote_cache.bazelrc user.bazelrc
@@ -58,8 +58,8 @@ if exist "%PROJECT_ROOT%\bazel-bin\kmsp11\main\libkmsp11.so" copy ^
     "%PROJECT_ROOT%\bazel-bin\kmsp11\main\libkmsp11.so" ^
     "%RESULTS_DIR%\kmsp11.dll"
 
-copy "%PROJECT_ROOT%/LICENSE" "%RESULTS_DIR%"
-copy "%PROJECT_ROOT%/NOTICE" "%RESULTS_DIR%"
+copy "%PROJECT_ROOT%\LICENSE" "%RESULTS_DIR%\LICENSE"
+copy "%PROJECT_ROOT%\NOTICE" "%RESULTS_DIR%\LICENSE"
 
 python "%PROJECT_ROOT%\.kokoro\copy_test_outputs.py" ^
     "%PROJECT_ROOT%\bazel-testlogs" "%RESULTS_DIR%\testlogs"

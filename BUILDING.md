@@ -1,7 +1,8 @@
 # Building
 
-The project is built using the [Bazel](https://bazel.build) build tool, version
-4.0.0 or later.
+The project is built using the [Bazel](https://bazel.build) build tool, version 4,
+release 4.2.1 or later. As of this 2022-02-04, the project is compatible with
+Bazel 5.x.
 
 All targets can be built and tested by invoking `bazel test ...` at the
 command line.
@@ -30,9 +31,9 @@ The project is built and tested by Google on the following platforms.
 
 ### macOS
 
-* Operating System: macOS 10.14+
+* Operating System: macOS 10.15+
 * Architecture: amd64
-* Compiler: Apple Clang (Xcode 11.3)
+* Compiler: Apple Clang (Xcode 12)
 
 ### Windows
 

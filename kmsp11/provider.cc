@@ -55,7 +55,7 @@ std::unique_ptr<KmsClient> NewKmsClient(const LibraryConfig& config) {
                                    ? kDefaultRpcTimeout
                                    : absl::Seconds(config.rpc_timeout_secs());
 
-  return absl::make_unique<KmsClient>(endpoint_address, creds, rpc_timeout,
+  return std::make_unique<KmsClient>(endpoint_address, creds, rpc_timeout,
                                       config.user_project_override());
 }
 
@@ -70,7 +70,7 @@ absl::StatusOr<std::unique_ptr<Provider>> Provider::New(LibraryConfig config) {
   for (const TokenConfig& tokenConfig : config.tokens()) {
     ASSIGN_OR_RETURN(std::unique_ptr<Token> token,
                      Token::New(tokens.size(), tokenConfig, client.get(),
-                                config.experimental_generate_certs()));
+                                config.generate_certs()));
     tokens.emplace_back(std::move(token));
   }
 

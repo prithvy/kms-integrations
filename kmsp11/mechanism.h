@@ -17,18 +17,25 @@
 #ifndef KMSP11_MECHANISM_H_
 #define KMSP11_MECHANISM_H_
 
-#include "absl/status/statusor.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/types/span.h"
 #include "kmsp11/cryptoki.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 
-// Returns a sorted list of the mechanism types supported in this library.
-absl::Span<const CK_MECHANISM_TYPE> Mechanisms();
+// Returns the mechanism types supported in this library and their corresponding
+// mechanism info.
+const absl::flat_hash_map<CK_MECHANISM_TYPE, const CK_MECHANISM_INFO>&
+AllMechanisms();
 
-// Returns details about the provided mechanism type.
-absl::StatusOr<CK_MECHANISM_INFO> MechanismInfo(CK_MECHANISM_TYPE type);
+// Returns all mechanisms corresponding to KMS algorithms for MAC keys.
+const absl::flat_hash_set<CK_MECHANISM_TYPE>& AllMacMechanisms();
 
-}  // namespace kmsp11
+// Returns all mechanisms corresponding to KMS algorithms for
+// RAW_ENCRYPT_DECRYPT keys.
+const absl::flat_hash_set<CK_MECHANISM_TYPE>& AllRawEncryptionMechanisms();
+
+}  // namespace cloud_kms::kmsp11
 
 #endif  // KMSP11_MECHANISM_H_

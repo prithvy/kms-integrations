@@ -1,7 +1,10 @@
 load("@rules_cc//cc:defs.bzl", "cc_library", "cc_proto_library", "cc_test")
 load("@rules_proto//proto:defs.bzl", "proto_library")
 
-package(default_visibility = ["//kmsp11:__subpackages__"])
+package(default_visibility = [
+    "//common:__subpackages__",
+    "//kmsp11:__subpackages__",
+])
 
 cc_library(
     name = "algorithm_details",
@@ -9,8 +12,8 @@ cc_library(
     hdrs = ["algorithm_details.h"],
     deps = [
         ":cryptoki_headers",
+        "//common:kms_v1",
         "//kmsp11/util:errors",
-        "//kmsp11/util:kms_v1",
         "@com_google_absl//absl/container:btree",
         "@com_google_absl//absl/status:statusor",
     ],
@@ -22,6 +25,7 @@ cc_test(
     srcs = ["algorithm_details_test.cc"],
     deps = [
         ":algorithm_details",
+        ":cryptoki_headers",
         "//kmsp11/test",
         "@com_google_googletest//:gtest_main",
     ],
@@ -33,7 +37,7 @@ cc_library(
     hdrs = ["attribute_map.h"],
     deps = [
         ":cryptoki_headers",
-        ":openssl",
+        "//common:openssl",
         "//kmsp11/util:errors",
         "//kmsp11/util:string_utils",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -59,10 +63,10 @@ cc_library(
     hdrs = ["cert_authority.h"],
     deps = [
         ":algorithm_details",
-        ":openssl",
+        "//common:kms_client",
+        "//common:openssl",
         "//kmsp11/util:crypto_utils",
         "//kmsp11/util:errors",
-        "//kmsp11/util:kms_client",
         "//kmsp11/util:string_utils",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
@@ -75,6 +79,7 @@ cc_test(
     srcs = ["cert_authority_test.cc"],
     deps = [
         ":cert_authority",
+        "//common/test:runfiles",
         "//kmsp11/test",
         "@com_google_googletest//:gtest_main",
     ],
@@ -98,7 +103,7 @@ genrule(
 cc_library(
     name = "cryptoki_raw_headers",
     hdrs = [":cryptoki_raw_header_files"],
-    include_prefix = "",
+    include_prefix = ".",  # https://github.com/bazelbuild/bazel/issues/17039
 )
 
 cc_library(
@@ -116,20 +121,8 @@ cc_library(
     hdrs = ["mechanism.h"],
     deps = [
         ":cryptoki_headers",
-        "//kmsp11/util:errors",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/status:statusor",
-    ],
-)
-
-cc_test(
-    name = "mechanism_test",
-    size = "small",
-    srcs = ["mechanism_test.cc"],
-    deps = [
-        ":mechanism",
-        "//kmsp11/test",
-        "@com_google_googletest//:gtest_main",
+        "@com_google_absl//absl/container:flat_hash_set",
     ],
 )
 
@@ -141,9 +134,9 @@ cc_library(
         ":algorithm_details",
         ":attribute_map",
         ":cryptoki_headers",
+        "//common:kms_v1",
+        "//common:status_macros",
         "//kmsp11/util:crypto_utils",
-        "//kmsp11/util:kms_v1",
-        "//kmsp11/util:status_macros",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -155,6 +148,7 @@ cc_test(
     deps = [
         ":cert_authority",
         ":object",
+        "//common/test:runfiles",
         "//kmsp11/test",
         "//kmsp11/util:crypto_utils",
         "@com_google_googletest//:gtest_main",
@@ -208,6 +202,7 @@ cc_test(
     srcs = ["object_store_test.cc"],
     deps = [
         ":object_store",
+        "//common/test:runfiles",
         "//kmsp11/test",
         "@com_google_googletest//:gtest_main",
     ],
@@ -225,29 +220,19 @@ cc_proto_library(
 )
 
 cc_library(
-    name = "openssl",
-    srcs = ["openssl.cc"],
-    hdrs = ["openssl.h"],
-    deps = ["@boringssl//:crypto"] + select({
-        "//:openssl": ["@boringssl//:openssl_compat"],
-        "//conditions:default": [],
-    }),
-)
-
-cc_library(
     name = "provider",
     srcs = ["provider.cc"],
     hdrs = ["provider.h"],
     deps = [
         ":cryptoki_headers",
+        ":mechanism",
         ":session",
         ":token",
         ":version",
+        "//common:status_macros",
         "//kmsp11/config:config_cc_proto",
         "//kmsp11/util:errors",
         "//kmsp11/util:handle_map",
-        "//kmsp11/util:platform",
-        "//kmsp11/util:status_macros",
         "//kmsp11/util:string_utils",
         "@com_google_absl//absl/status:statusor",
     ],
@@ -259,6 +244,7 @@ cc_test(
     srcs = ["provider_test.cc"],
     deps = [
         ":provider",
+        "//common/test:proto_parser",
         "//fakekms/cpp:fakekms",
         "//kmsp11/test",
         "@com_google_googletest//:gtest_main",
@@ -298,9 +284,9 @@ cc_library(
         ":object_loader",
         ":object_store",
         ":object_store_state_cc_proto",
+        "//common:kms_client",
+        "//common:status_macros",
         "//kmsp11/config:config_cc_proto",
-        "//kmsp11/util:kms_client",
-        "//kmsp11/util:status_macros",
         "//kmsp11/util:string_utils",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/synchronization",

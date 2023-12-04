@@ -10,8 +10,8 @@ cc_library(
     deps = [
         ":config_cc_proto",
         ":protoyaml",
+        "//common:platform",
         "//kmsp11/util:errors",
-        "//kmsp11/util:platform",
     ],
 )
 
@@ -21,8 +21,9 @@ cc_test(
     srcs = ["config_test.cc"],
     deps = [
         ":config",
+        "//common/test:proto_parser",
+        "//common/test:test_platform",
         "//kmsp11/test",
-        "//kmsp11/util:platform",
         "@com_google_absl//absl/cleanup",
         "@com_google_googletest//:gtest_main",
     ],
@@ -43,8 +44,8 @@ cc_library(
     srcs = ["protoyaml.cc"],
     hdrs = ["protoyaml.h"],
     deps = [
+        "//common:status_macros",
         "//kmsp11/util:errors",
-        "//kmsp11/util:status_macros",
         "@com_github_jbeder_yaml_cpp//:yaml-cpp",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status:statusor",
@@ -58,6 +59,7 @@ cc_test(
     deps = [
         ":protoyaml",
         ":protoyaml_test_cc_proto",
+        "//common/test:proto_parser",
         "//kmsp11/test",
         "@com_google_googletest//:gtest_main",
     ],

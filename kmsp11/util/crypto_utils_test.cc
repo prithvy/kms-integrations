@@ -18,11 +18,12 @@
 #include "absl/strings/escaping.h"
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
+#include "common/test/runfiles.h"
+#include "common/test/test_status_macros.h"
 #include "gmock/gmock.h"
-#include "kmsp11/test/runfiles.h"
-#include "kmsp11/test/test_status_macros.h"
+#include "kmsp11/test/matchers.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::ElementsAre;
@@ -382,20 +383,17 @@ TEST(MarshalEcPointTest, PointMarshaled) {
                        MarshalEcPointToAsn1OctetStringDer(key.get()));
 
   // Deserialize the public key point to an ASN.1 octet string
-  bssl::UniquePtr<ASN1_OCTET_STRING> point_string_owner(
-      ASN1_OCTET_STRING_new());
-  ASN1_OCTET_STRING* point_string = point_string_owner.get();
   const uint8_t* point_data =
       reinterpret_cast<const uint8_t*>(point_der.data());
-  EXPECT_TRUE(
-      d2i_ASN1_OCTET_STRING(&point_string, &point_data, point_der.size()));
+  bssl::UniquePtr<ASN1_OCTET_STRING> point_string(
+      d2i_ASN1_OCTET_STRING(nullptr, &point_data, point_der.size()));
 
   // Deserialize the octet string's contents to an EC_POINT
   bssl::UniquePtr<EC_POINT> point(EC_POINT_new(group.get()));
   bssl::UniquePtr<BN_CTX> bn_ctx(BN_CTX_new());
   EXPECT_TRUE(EC_POINT_oct2point(
-      group.get(), point.get(), ASN1_STRING_get0_data(point_string),
-      ASN1_STRING_length(point_string), bn_ctx.get()));
+      group.get(), point.get(), ASN1_STRING_get0_data(point_string.get()),
+      ASN1_STRING_length(point_string.get()), bn_ctx.get()));
 
   // Ensure the retrieved point matches the original
   EXPECT_EQ(EC_POINT_cmp(group.get(), EC_KEY_get0_public_key(key.get()),
@@ -561,6 +559,17 @@ TEST(ParsePublicKeyTest, MalformedKey) {
   ASSERT_OK_AND_ASSIGN(std::string cert_pem,
                        LoadTestRunfile("ec_p256_cert.pem"));
   EXPECT_THAT(ParseX509PublicKeyDer(cert_pem),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+}
+
+TEST(ParseX509CertificatePem, WellFormedCertificate) {
+  ASSERT_OK_AND_ASSIGN(std::string cert_pem,
+                       LoadTestRunfile("ec_p256_cert.pem"));
+  EXPECT_OK(ParseX509CertificatePem(cert_pem));
+}
+
+TEST(ParseX509CertificatePem, MalformedCertificate) {
+  EXPECT_THAT(ParseX509CertificatePem("foobarbaz"),
               StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
@@ -852,4 +861,4 @@ TEST(SslErrorToStringTest, DefaultMessageEmittedOnNoError) {
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

@@ -3,7 +3,7 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test")
 load("@io_bazel_rules_go//proto:def.bzl", "go_proto_library")
 load("@rules_cc//cc:defs.bzl", "cc_proto_library")
 
-package(default_visibility = ["//:__subpackages__"])
+package(default_visibility = ["//:internal"])
 
 go_library(
     name = "fault",
@@ -27,7 +27,7 @@ go_test(
     deps = [
         ":fault_go_proto",
         ":math_go_proto",
-        "@go_googleapis//google/rpc:status_go_proto",
+        "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//test/bufconn:go_default_library",
     ],
 )
@@ -37,7 +37,7 @@ go_proto_library(
     compilers = ["@io_bazel_rules_go//proto:go_grpc"],
     importpath = "cloud.google.com/kms/integrations/fakekms/fault/faultpb",
     proto = ":fault_proto",
-    deps = ["@go_googleapis//google/rpc:status_go_proto"],
+    deps = ["@org_golang_google_genproto_googleapis_rpc//status"],
 )
 
 proto_library(

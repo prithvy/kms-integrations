@@ -1,5 +1,4 @@
-load("@rules_cc//cc:defs.bzl", "cc_library", "cc_proto_library", "cc_test")
-load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
 
 package(default_visibility = ["//kmsp11:__subpackages__"])
 
@@ -7,11 +6,21 @@ cc_library(
     name = "test",
     testonly = 1,
     deps = [
+        ":common_setup",
         ":matchers",
-        ":proto_parser",
         ":resource_helpers",
-        ":runfiles",
-        ":test_status_macros",
+    ],
+)
+
+cc_library(
+    name = "common_setup",
+    testonly = 1,
+    srcs = ["common_setup.cc"],
+    hdrs = ["common_setup.h"],
+    deps = [
+        ":resource_helpers",
+        "//fakekms/cpp:fakekms",
+        "//kmsp11/util:crypto_utils",
     ],
 )
 
@@ -20,6 +29,7 @@ cc_library(
     testonly = 1,
     hdrs = ["matchers.h"],
     deps = [
+        "//common/test:matchers",
         "//kmsp11/util:status_utils",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
@@ -33,31 +43,9 @@ cc_test(
     srcs = ["matchers_test.cc"],
     deps = [
         ":matchers",
-        ":test_message_cc_proto",
+        "//common:test_message_cc_proto",
         "//kmsp11:cryptoki_headers",
         "@com_google_absl//absl/status",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_library(
-    name = "proto_parser",
-    testonly = 1,
-    hdrs = ["proto_parser.h"],
-    deps = [
-        "@com_google_googletest//:gtest",
-        "@com_google_protobuf//:protobuf_lite",
-    ],
-)
-
-cc_test(
-    name = "proto_parser_test",
-    size = "small",
-    srcs = ["proto_parser_test.cc"],
-    deps = [
-        ":matchers",
-        ":proto_parser",
-        ":test_message_cc_proto",
         "@com_google_googletest//:gtest_main",
     ],
 )
@@ -68,66 +56,14 @@ cc_library(
     srcs = ["resource_helpers.cc"],
     hdrs = ["resource_helpers.h"],
     deps = [
-        ":runfiles",
-        ":test_status_macros",
+        "//common:kms_v1",
+        "//common/test:resource_helpers",
+        "//common/test:runfiles",
+        "//common/test:test_status_macros",
+        "//fakekms/cpp:fakekms",
         "//kmsp11:object",
+        "//kmsp11/main:bridge",
         "//kmsp11/util:crypto_utils",
-        "//kmsp11/util:kms_v1",
         "@com_google_absl//absl/strings",
-    ],
-)
-
-cc_library(
-    name = "runfiles",
-    testonly = 1,
-    srcs = ["runfiles.cc"],
-    hdrs = ["runfiles.h"],
-    data = [":testdata"],
-    deps = [
-        "@bazel_tools//tools/cpp/runfiles",
-        "@com_github_google_glog//:glog",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-filegroup(
-    name = "testdata",
-    srcs = glob(["testdata/*"]),
-)
-
-cc_proto_library(
-    name = "test_message_cc_proto",
-    testonly = 1,
-    deps = [":test_message_proto"],
-)
-
-proto_library(
-    name = "test_message_proto",
-    testonly = 1,
-    srcs = ["test_message.proto"],
-)
-
-cc_library(
-    name = "test_status_macros",
-    testonly = 1,
-    hdrs = ["test_status_macros.h"],
-    deps = [
-        ":matchers",
-        "//kmsp11/util:status_macros",
-        "//kmsp11/util:status_utils",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_googletest//:gtest",
-    ],
-)
-
-cc_test(
-    name = "test_status_macros_test",
-    size = "small",
-    srcs = ["test_status_macros_test.cc"],
-    deps = [
-        ":test_status_macros",
-        "@com_google_googletest//:gtest_main",
     ],
 )

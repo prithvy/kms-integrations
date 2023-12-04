@@ -14,16 +14,17 @@
 
 #include "kmsp11/operation/crypter_ops.h"
 
+#include "common/test/runfiles.h"
+#include "common/test/test_status_macros.h"
 #include "gmock/gmock.h"
 #include "kmsp11/cryptoki.h"
+#include "kmsp11/kmsp11.h"
 #include "kmsp11/object.h"
 #include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/runfiles.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "kmsp11/util/crypto_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 TEST(DecryptOpTest, ValidMechanismSuccess) {
@@ -94,8 +95,18 @@ TEST(SignOpTest, ValidMechanismSuccess) {
   EXPECT_OK(NewSignOp(key, &mechanism));
 }
 
+TEST(SignOpTest, ValidDigestingMechanismSuccess) {
+  ASSERT_OK_AND_ASSIGN(
+      KeyPair kp, NewMockKeyPair(kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256,
+                                 "ec_p256_public.pem"));
+  std::shared_ptr<Object> key = std::make_shared<Object>(kp.private_key);
+
+  CK_MECHANISM mechanism{CKM_ECDSA_SHA256, nullptr, 0};
+  EXPECT_OK(NewSignOp(key, &mechanism));
+}
+
 TEST(SignOpTest, InvalidMechanismFailure) {
-  CK_MECHANISM mech = {CKM_SHA_1_HMAC};
+  CK_MECHANISM mech = {CKM_SHA512_256_HMAC};
   EXPECT_THAT(NewSignOp(nullptr, &mech), StatusRvIs(CKR_MECHANISM_INVALID));
 }
 
@@ -109,10 +120,20 @@ TEST(VerifyOpTest, ValidMechanismSuccess) {
   EXPECT_OK(NewVerifyOp(key, &mechanism));
 }
 
+TEST(VerifyOpTest, ValidDigestingMechanismSuccess) {
+  ASSERT_OK_AND_ASSIGN(
+      KeyPair kp, NewMockKeyPair(kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256,
+                                 "ec_p256_public.pem"));
+  std::shared_ptr<Object> key = std::make_shared<Object>(kp.public_key);
+
+  CK_MECHANISM mechanism{CKM_ECDSA_SHA256, nullptr, 0};
+  EXPECT_OK(NewVerifyOp(key, &mechanism));
+}
+
 TEST(VerifyOpTest, InvalidMechanismFailure) {
-  CK_MECHANISM mech = {CKM_SHA_1_HMAC};
+  CK_MECHANISM mech = {CKM_SHA512_256_HMAC};
   EXPECT_THAT(NewVerifyOp(nullptr, &mech), StatusRvIs(CKR_MECHANISM_INVALID));
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

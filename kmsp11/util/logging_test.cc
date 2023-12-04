@@ -17,18 +17,18 @@
 #include <filesystem>
 
 #include "absl/cleanup/cleanup.h"
-#include "absl/strings/escaping.h"
+#include "absl/log/absl_log.h"
+#include "common/platform.h"
+#include "common/test/test_status_macros.h"
 #include "glog/logging.h"
 #include "gmock/gmock.h"
 #include "grpc/grpc.h"
 #include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "kmsp11/util/errors.h"
-#include "kmsp11/util/platform.h"
 #include "kmsp11/util/string_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::HasSubstr;
@@ -45,6 +45,15 @@ TEST(LoggingTest, StandardErrorIsEmptyWhenNoLogMessageAreEmitted) {
   ShutdownLogging();
 
   EXPECT_THAT(GetCapturedStderr(), IsEmpty());
+}
+
+TEST(LoggingTest, LogAndResolveWithUninitializedLoggerWritesToStandardError) {
+  CaptureStderr();
+  absl::Status error = absl::InvalidArgumentError("foobarbaz");
+
+  LogAndResolve("foo", error);
+
+  EXPECT_THAT(GetCapturedStderr(), HasSubstr(error.ToString()));
 }
 
 TEST(LoggingTest, NoDirectoryLogsInfoToStandardError) {
@@ -224,9 +233,9 @@ TEST_F(LogDirectoryTest, GrpcErrorsAreLoggedToGlogDestination) {
     absl::Cleanup c = ShutdownLogging;
 
     grpc_init();
-    gpr_log(GPR_ERROR, error_message.c_str());
-    gpr_log(GPR_INFO, info_message.c_str());
-    gpr_log(GPR_DEBUG, debug_message.c_str());
+    gpr_log(GPR_ERROR, "%s", error_message.c_str());
+    gpr_log(GPR_INFO, "%s", info_message.c_str());
+    gpr_log(GPR_DEBUG, "%s", debug_message.c_str());
   }
 
   std::vector<std::filesystem::directory_entry> files = LogDirectoryEntries();
@@ -238,5 +247,20 @@ TEST_F(LogDirectoryTest, GrpcErrorsAreLoggedToGlogDestination) {
   EXPECT_THAT(GetCapturedStderr(), IsEmpty());
 }
 
+TEST_F(LogDirectoryTest, AbseilErrorsAreLoggedToGlogDestination) {
+  std::string message = "Here is my test message";
+  CaptureStderr();
+
+  ASSERT_OK(InitializeLogging(log_directory_, ""));
+  ABSL_LOG(WARNING) << message;
+  ShutdownLogging();
+
+  std::vector<std::filesystem::directory_entry> files = LogDirectoryEntries();
+  ASSERT_THAT(files, SizeIs(1));
+  EXPECT_THAT(ReadFileToString(files[0].path().string()),
+              IsOkAndHolds((HasSubstr(message))));
+  EXPECT_THAT(GetCapturedStderr(), IsEmpty());
+}
+
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

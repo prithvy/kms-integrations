@@ -22,10 +22,11 @@
 
 #include "absl/status/statusor.h"
 #include "absl/time/time.h"
+#include "common/kms_v1.h"
+#include "common/openssl.h"
 #include "kmsp11/cryptoki.h"
-#include "kmsp11/openssl.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 
 // Convert an ASN1_TIME structure to an absl::Time.
 absl::StatusOr<absl::Time> Asn1TimeToAbsl(const ASN1_TIME* time);
@@ -107,6 +108,11 @@ absl::StatusOr<std::string> MarshalX509Sig(X509_SIG* value);
 absl::StatusOr<bssl::UniquePtr<X509>> ParseX509CertificateDer(
     std::string_view certificate_der);
 
+// Parses an X.509 certificate in PEM format. Returns InvalidArgument if
+// the provided certificate is malformed.
+absl::StatusOr<bssl::UniquePtr<X509>> ParseX509CertificatePem(
+    std::string_view certificate_pem);
+
 // Parses a public key in X.509 SubjectPublicKeyInfo DER format. Returns
 // InvalidArgument if the provided key is malformed.
 absl::StatusOr<bssl::UniquePtr<EVP_PKEY>> ParseX509PublicKeyDer(
@@ -141,13 +147,15 @@ absl::Status RsaVerifyPss(EVP_PKEY* public_key, const EVP_MD* hash,
 absl::Status RsaVerifyRawPkcs1(RSA* public_key, absl::Span<const uint8_t> data,
                                absl::Span<const uint8_t> signature);
 
-// Clear the memory at the provided location, taking care to avoid letting the
-// compiler optimize this out.
-//
-// More resources:
-// https://wiki.sei.cmu.edu/confluence/display/c/MSC06-C.+Beware+of+compiler+optimizations
-// https://github.com/google/tink/blob/040ac621b3e9ff7a240b1e596a423a30d32f9013/cc/util/secret_data_internal.h#L67
-void SafeZeroMemory(volatile char* ptr, size_t size);
+// Returns whether or not the algorithm is a raw RSA PKCS #1 algorithm.
+bool IsRawRsaAlgorithm(
+    kms_v1::CryptoKeyVersion::CryptoKeyVersionAlgorithm algorithm);
+
+// Build a DigestInfo structure, which is the expected input into a CKM_RSA_PKCS
+// signing operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc441850410
+absl::StatusOr<std::vector<uint8_t>> BuildRsaDigestInfo(
+    int digest_nid, absl::Span<const uint8_t> digest);
 
 // Retrieves the contents of BoringSSL's error stack, and dumps it to a string.
 // If no errors are found on the stack, `default_message` is returned instead.
@@ -155,6 +163,40 @@ std::string SslErrorToString(
     std::string_view default_message =
         "(error could not be retrieved from the SSL stack)");
 
-}  // namespace kmsp11
+// A replacement for std::allocator that zeroes before deallocating.
+//
+// Suggested usage:
+//   std::vector<uint8_t, ZeroDeallocator<uint8_t>> t;
+template <typename T>
+struct ZeroDeallocator {
+  using value_type = T;
+
+  ZeroDeallocator() = default;
+
+  template <class U>
+  constexpr ZeroDeallocator(const ZeroDeallocator<U>&) noexcept {}
+
+  T* allocate(std::size_t len) { return static_cast<T*>(std::malloc(len)); }
+  void deallocate(T* ptr, std::size_t len) {
+    OPENSSL_cleanse(ptr, len);
+    std::free(ptr);
+  }
+};
+
+// A replacement for std::default_delete that zeroes before deleting.
+//
+// Suggested usage:
+//   std::unique_ptr<std::string, ZeroDelete<std::string>> t;
+template <typename T>
+struct ZeroDelete {
+  void operator()(T* value) const {
+    if (value) {
+      OPENSSL_cleanse(value->data(), value->size());
+    }
+    delete value;
+  }
+};
+
+}  // namespace cloud_kms::kmsp11
 
 #endif  // KMSP11_UTIL_CRYPTO_UTILS_H_

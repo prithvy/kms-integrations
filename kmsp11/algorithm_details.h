@@ -20,12 +20,12 @@
 #include <optional>
 
 #include "absl/status/statusor.h"
+#include "common/kms_v1.h"
 #include "google/cloud/kms/v1/resources.pb.h"
 #include "google/cloud/kms/v1/service.pb.h"
 #include "kmsp11/cryptoki.h"
-#include "kmsp11/util/kms_v1.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 
 struct AlgorithmDetails {
   kms_v1::CryptoKeyVersion::CryptoKeyVersionAlgorithm algorithm;
@@ -40,6 +40,6 @@ struct AlgorithmDetails {
 absl::StatusOr<AlgorithmDetails> GetDetails(
     kms_v1::CryptoKeyVersion::CryptoKeyVersionAlgorithm algorithm);
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11
 
 #endif  // KMSP11_ALGORITHM_DETAILS_H_

@@ -20,13 +20,13 @@
 #include <string_view>
 
 #include "absl/status/statusor.h"
+#include "common/kms_v1.h"
 #include "google/cloud/kms/v1/resources.pb.h"
 #include "kmsp11/algorithm_details.h"
 #include "kmsp11/attribute_map.h"
 #include "kmsp11/cryptoki.h"
-#include "kmsp11/util/kms_v1.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 
 struct KeyPair;
 
@@ -38,6 +38,8 @@ class Object {
  public:
   static absl::StatusOr<KeyPair> NewKeyPair(const kms_v1::CryptoKeyVersion& ckv,
                                             BSSL_CONST EVP_PKEY* public_key);
+  static absl::StatusOr<Object> NewSecretKey(
+      const kms_v1::CryptoKeyVersion& ckv);
 
   static absl::StatusOr<Object> NewCertificate(
       const kms_v1::CryptoKeyVersion& ckv, X509* certificate);
@@ -66,6 +68,6 @@ struct KeyPair {
   Object private_key;
 };
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11
 
 #endif  // KMSP11_OBJECT_H_

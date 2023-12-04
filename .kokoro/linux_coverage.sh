@@ -32,11 +32,26 @@ export LLVM_DIST="clang+llvm-${LLVM_VERSION}-x86_64-linux-gnu-ubuntu-16.04"
 export LLVM_ROOT=/opt/${LLVM_DIST}
 sudo tar xf "${KOKORO_GFILE_DIR}/${LLVM_DIST}.tar.xz" -C /opt
 
-use_bazel.sh 4.2.1
+# Get Go and Bazelisk
+sudo tar xf "${KOKORO_GFILE_DIR}/go1.20.3.linux-amd64.tar.gz" -C /opt
+export GOROOT=/opt/go
+export GOPATH=${KOKORO_ARTIFACTS_DIR}/gopath
+${GOROOT}/bin/go install github.com/bazelbuild/bazelisk@latest
+shopt -s expand_aliases
+alias bazelisk=${GOPATH}/bin/bazelisk
 
-# Configure user.bazelrc with remote build caching options
+# Unwrap our wrapped service account key
+export GOOGLE_APPLICATION_CREDENTIALS=${KOKORO_ARTIFACTS_DIR}/oss-tools-ci-key.json
+${GOROOT}/bin/go run ./.kokoro/unwrap_key.go \
+  -wrapping_key_file=${KOKORO_KEYSTORE_DIR}/75220_token-wrapping-key \
+  -wrapped_key_file=${KOKORO_GFILE_DIR}/oss-tools-ci-key.json.enc \
+  > ${GOOGLE_APPLICATION_CREDENTIALS}
+
+# Configure user.bazelrc with remote build caching options and Google creds
 cp .kokoro/remote_cache.bazelrc user.bazelrc
-echo "build --remote_default_exec_properties=cache-silo-key=linux-coverage" >> user.bazelrc
+echo "build --remote_default_exec_properties=cache-silo-key=${KOKORO_JOB_NAME}" \
+  >> user.bazelrc
+echo "test --test_env=GOOGLE_APPLICATION_CREDENTIALS" >> user.bazelrc
 
 # Ensure that coverage outputs and test logs are uploaded even on failure
 _upload_artifacts() {
@@ -57,7 +72,10 @@ export BAZEL_USE_LLVM_NATIVE_COVERAGE=1
 export BAZEL_LLVM_COV=${LLVM_ROOT}/bin/llvm-cov
 export GCOV=${LLVM_ROOT}/bin/llvm-profdata
 
-bazel coverage \
+# Ensure Bazel version information is included in the build log
+bazelisk version
+
+bazelisk coverage \
   --combined_report=lcov \
   --coverage_report_generator=@bazel_tools//tools/test/CoverageOutputGenerator/java/com/google/devtools/coverageoutputgenerator:Main \
   --experimental_generate_llvm_lcov \

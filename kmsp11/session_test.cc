@@ -14,19 +14,22 @@
 
 #include "kmsp11/session.h"
 
+#include "common/test/test_status_macros.h"
 #include "fakekms/cpp/fakekms.h"
 #include "gmock/gmock.h"
 #include "kmsp11/kmsp11.h"
+#include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "kmsp11/util/crypto_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::AllOf;
+using ::testing::ElementsAreArray;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
+using ::testing::Not;
 using ::testing::Pointee;
 using ::testing::Property;
 using ::testing::SizeIs;
@@ -41,9 +44,10 @@ class SessionTest : public testing::Test {
                                    key_ring_);
 
     config_.set_key_ring(key_ring_.name());
-    client_ = std::make_unique<KmsClient>(fake_server_->listen_addr(),
-                                           grpc::InsecureChannelCredentials(),
-                                           absl::Seconds(5));
+    client_ = std::make_unique<KmsClient>(KmsClient::Options{
+        .endpoint_address = fake_server_->listen_addr(),
+        .rpc_timeout = absl::Seconds(5),
+    });
   }
 
   std::unique_ptr<fakekms::Server> fake_server_;
@@ -304,7 +308,7 @@ TEST_F(SessionTest, Decrypt) {
   ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
   ckv = WaitForEnablement(kms_client.get(), ckv);
 
-  kms_v1::PublicKey pub_proto = GetPublicKey(kms_client.get(), ckv);
+  kms_v1::PublicKey pub_proto = GetPublicKeyOrDie(kms_client.get(), ckv);
   ASSERT_OK_AND_ASSIGN(bssl::UniquePtr<EVP_PKEY> pub,
                        ParseX509PublicKeyPem(pub_proto.pem()));
 
@@ -377,6 +381,71 @@ TEST_F(SessionTest, DecryptNotInitialized) {
 
   uint8_t ciphertext[32];
   EXPECT_THAT(s.Decrypt(ciphertext), StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, DecryptUpdateNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  uint8_t data[32];
+  EXPECT_THAT(s.DecryptUpdate(data), StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, DecryptFinalNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  EXPECT_THAT(s.DecryptFinal(), StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, DecryptFinalWithoutUpdateFails) {
+  auto kms_client = fake_server_->NewClient();
+
+  kms_v1::CryptoKey ck;
+  ck.set_purpose(kms_v1::CryptoKey::RAW_ENCRYPT_DECRYPT);
+  ck.mutable_version_template()->set_algorithm(
+      kms_v1::CryptoKeyVersion::AES_256_GCM);
+  ck.mutable_version_template()->set_protection_level(
+      kms_v1::ProtectionLevel::HSM);
+  ck = CreateCryptoKeyOrDie(kms_client.get(), key_ring_.name(), "ck", ck, true);
+
+  kms_v1::CryptoKeyVersion ckv;
+  ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
+  ckv = WaitForEnablement(kms_client.get(), ckv);
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<CK_OBJECT_HANDLE> handles =
+      s.token()->FindObjects([&](const Object& o) -> bool {
+        return o.kms_key_name() == ckv.name() &&
+               o.object_class() == CKO_SECRET_KEY;
+      });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> key,
+                       s.token()->GetObject(handles[0]));
+
+  std::vector<uint8_t> iv(12);
+  std::vector<uint8_t> aad = {0xDE, 0xAD, 0xBE, 0xEF};
+  CK_GCM_PARAMS params = {
+      iv.data(),                                   // pIv
+      12,                                          // ulIvLen
+      96,                                          // ulIvBits
+      aad.data(),                                  // pAAD
+      static_cast<unsigned long int>(aad.size()),  // ulAADLen
+      128,                                         // ulTagBits
+  };
+  CK_MECHANISM mech = {
+      CKM_CLOUDKMS_AES_GCM,  // mechanism
+      &params,               // pParameter
+      sizeof(params),        // ulParameterLen
+  };
+
+  EXPECT_OK(s.DecryptInit(key, &mech));
+  EXPECT_THAT(s.DecryptFinal(), StatusRvIs(CKR_FUNCTION_FAILED));
 }
 
 TEST_F(SessionTest, Encrypt) {
@@ -462,6 +531,71 @@ TEST_F(SessionTest, EncryptNotInitialized) {
   EXPECT_THAT(s.Encrypt(plaintext), StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
 }
 
+TEST_F(SessionTest, EncryptUpdateNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  uint8_t data[32];
+  EXPECT_THAT(s.EncryptUpdate(data), StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, EncryptFinalNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  EXPECT_THAT(s.EncryptFinal(), StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, EncryptFinalWithoutUpdateFails) {
+  auto kms_client = fake_server_->NewClient();
+
+  kms_v1::CryptoKey ck;
+  ck.set_purpose(kms_v1::CryptoKey::RAW_ENCRYPT_DECRYPT);
+  ck.mutable_version_template()->set_algorithm(
+      kms_v1::CryptoKeyVersion::AES_256_GCM);
+  ck.mutable_version_template()->set_protection_level(
+      kms_v1::ProtectionLevel::HSM);
+  ck = CreateCryptoKeyOrDie(kms_client.get(), key_ring_.name(), "ck", ck, true);
+
+  kms_v1::CryptoKeyVersion ckv;
+  ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
+  ckv = WaitForEnablement(kms_client.get(), ckv);
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<CK_OBJECT_HANDLE> handles =
+      s.token()->FindObjects([&](const Object& o) -> bool {
+        return o.kms_key_name() == ckv.name() &&
+               o.object_class() == CKO_SECRET_KEY;
+      });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> key,
+                       s.token()->GetObject(handles[0]));
+
+  std::vector<uint8_t> iv(12);
+  std::vector<uint8_t> aad = {0xDE, 0xAD, 0xBE, 0xEF};
+  CK_GCM_PARAMS params = {
+      iv.data(),                                   // pIv
+      12,                                          // ulIvLen
+      96,                                          // ulIvBits
+      aad.data(),                                  // pAAD
+      static_cast<unsigned long int>(aad.size()),  // ulAADLen
+      128,                                         // ulTagBits
+  };
+  CK_MECHANISM mech = {
+      CKM_CLOUDKMS_AES_GCM,  // mechanism
+      &params,               // pParameter
+      sizeof(params),        // ulParameterLen
+  };
+
+  EXPECT_OK(s.EncryptInit(key, &mech));
+  EXPECT_THAT(s.EncryptFinal(), StatusRvIs(CKR_FUNCTION_FAILED));
+}
+
 TEST_F(SessionTest, Sign) {
   auto kms_client = fake_server_->NewClient();
 
@@ -477,7 +611,7 @@ TEST_F(SessionTest, Sign) {
   ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
   ckv = WaitForEnablement(kms_client.get(), ckv);
 
-  kms_v1::PublicKey pub_proto = GetPublicKey(kms_client.get(), ckv);
+  kms_v1::PublicKey pub_proto = GetPublicKeyOrDie(kms_client.get(), ckv);
   ASSERT_OK_AND_ASSIGN(bssl::UniquePtr<EVP_PKEY> pub,
                        ParseX509PublicKeyPem(pub_proto.pem()));
 
@@ -636,6 +770,111 @@ TEST_F(SessionTest, SignVerify) {
   EXPECT_OK(s.Verify(digest, signature));
 }
 
+TEST_F(SessionTest, SignUpdateNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  uint8_t data[32];
+  EXPECT_THAT(s.SignUpdate(data), StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, SignFinalNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  uint8_t signature[64];
+  EXPECT_THAT(s.SignFinal(absl::MakeSpan(signature)),
+              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, SignFinalWithoutUpdateFails) {
+  auto kms_client = fake_server_->NewClient();
+
+  kms_v1::CryptoKey ck;
+  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
+  ck.mutable_version_template()->set_algorithm(
+      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
+  ck.mutable_version_template()->set_protection_level(
+      kms_v1::ProtectionLevel::HSM);
+  ck = CreateCryptoKeyOrDie(kms_client.get(), key_ring_.name(), "ck", ck, true);
+
+  kms_v1::CryptoKeyVersion ckv;
+  ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
+  ckv = WaitForEnablement(kms_client.get(), ckv);
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<CK_OBJECT_HANDLE> handles =
+      s.token()->FindObjects([&](const Object& o) -> bool {
+        return o.kms_key_name() == ckv.name() &&
+               o.object_class() == CKO_PRIVATE_KEY;
+      });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> prv,
+                       s.token()->GetObject(handles[0]));
+
+  handles = s.token()->FindObjects([&](const Object& o) -> bool {
+    return o.kms_key_name() == ckv.name() && o.object_class() == CKO_PUBLIC_KEY;
+  });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> pub,
+                       s.token()->GetObject(handles[0]));
+
+  CK_MECHANISM mech{CKM_ECDSA_SHA256, nullptr, 0};
+
+  uint8_t signature[64];
+  EXPECT_OK(s.SignInit(prv, &mech));
+  EXPECT_THAT(s.SignFinal(absl::MakeSpan(signature)),
+              StatusRvIs(CKR_FUNCTION_FAILED));
+}
+
+TEST_F(SessionTest, SignMultiPartSuccess) {
+  auto kms_client = fake_server_->NewClient();
+
+  kms_v1::CryptoKey ck;
+  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
+  ck.mutable_version_template()->set_algorithm(
+      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
+  ck.mutable_version_template()->set_protection_level(
+      kms_v1::ProtectionLevel::HSM);
+  ck = CreateCryptoKeyOrDie(kms_client.get(), key_ring_.name(), "ck", ck, true);
+
+  kms_v1::CryptoKeyVersion ckv;
+  ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
+  ckv = WaitForEnablement(kms_client.get(), ckv);
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<CK_OBJECT_HANDLE> handles =
+      s.token()->FindObjects([&](const Object& o) -> bool {
+        return o.kms_key_name() == ckv.name() &&
+               o.object_class() == CKO_PRIVATE_KEY;
+      });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> prv,
+                       s.token()->GetObject(handles[0]));
+
+  handles = s.token()->FindObjects([&](const Object& o) -> bool {
+    return o.kms_key_name() == ckv.name() && o.object_class() == CKO_PUBLIC_KEY;
+  });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> pub,
+                       s.token()->GetObject(handles[0]));
+
+  CK_MECHANISM mech{CKM_ECDSA_SHA256, nullptr, 0};
+
+  uint8_t data[32], signature[64];
+  EXPECT_OK(s.SignInit(prv, &mech));
+  EXPECT_OK(s.SignUpdate(data));
+  EXPECT_OK(s.SignFinal(absl::MakeSpan(signature)));
+}
+
 TEST_F(SessionTest, VerifyInitAlreadyActive) {
   auto kms_client = fake_server_->NewClient();
 
@@ -678,6 +917,172 @@ TEST_F(SessionTest, VerifyNotInitialized) {
   uint8_t digest[32], signature[64];
   EXPECT_THAT(s.Verify(digest, signature),
               StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, VerifyUpdateNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  uint8_t data[32];
+  EXPECT_THAT(s.VerifyUpdate(data), StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, VerifyFinalNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  uint8_t signature[64];
+  EXPECT_THAT(s.VerifyFinal(absl::MakeSpan(signature)),
+              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+}
+
+TEST_F(SessionTest, VerifyFinalWithoutUpdateFails) {
+  auto kms_client = fake_server_->NewClient();
+
+  kms_v1::CryptoKey ck;
+  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
+  ck.mutable_version_template()->set_algorithm(
+      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
+  ck.mutable_version_template()->set_protection_level(
+      kms_v1::ProtectionLevel::HSM);
+  ck = CreateCryptoKeyOrDie(kms_client.get(), key_ring_.name(), "ck", ck, true);
+
+  kms_v1::CryptoKeyVersion ckv;
+  ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
+  ckv = WaitForEnablement(kms_client.get(), ckv);
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<CK_OBJECT_HANDLE> handles =
+      s.token()->FindObjects([&](const Object& o) -> bool {
+        return o.kms_key_name() == ckv.name() &&
+               o.object_class() == CKO_PRIVATE_KEY;
+      });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> prv,
+                       s.token()->GetObject(handles[0]));
+
+  handles = s.token()->FindObjects([&](const Object& o) -> bool {
+    return o.kms_key_name() == ckv.name() && o.object_class() == CKO_PUBLIC_KEY;
+  });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> pub,
+                       s.token()->GetObject(handles[0]));
+
+  CK_MECHANISM mech{CKM_ECDSA_SHA256, nullptr, 0};
+
+  uint8_t signature[64];
+  EXPECT_OK(s.VerifyInit(pub, &mech));
+  EXPECT_THAT(s.VerifyFinal(absl::MakeSpan(signature)),
+              StatusRvIs(CKR_FUNCTION_FAILED));
+}
+
+TEST_F(SessionTest, SignVerifyMultiPartSuccess) {
+  auto kms_client = fake_server_->NewClient();
+
+  kms_v1::CryptoKey ck;
+  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
+  ck.mutable_version_template()->set_algorithm(
+      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
+  ck.mutable_version_template()->set_protection_level(
+      kms_v1::ProtectionLevel::HSM);
+  ck = CreateCryptoKeyOrDie(kms_client.get(), key_ring_.name(), "ck", ck, true);
+
+  kms_v1::CryptoKeyVersion ckv;
+  ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
+  ckv = WaitForEnablement(kms_client.get(), ckv);
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<CK_OBJECT_HANDLE> handles =
+      s.token()->FindObjects([&](const Object& o) -> bool {
+        return o.kms_key_name() == ckv.name() &&
+               o.object_class() == CKO_PRIVATE_KEY;
+      });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> prv,
+                       s.token()->GetObject(handles[0]));
+
+  handles = s.token()->FindObjects([&](const Object& o) -> bool {
+    return o.kms_key_name() == ckv.name() && o.object_class() == CKO_PUBLIC_KEY;
+  });
+  EXPECT_EQ(handles.size(), 1);
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Object> pub,
+                       s.token()->GetObject(handles[0]));
+
+  CK_MECHANISM mech{CKM_ECDSA_SHA256, nullptr, 0};
+
+  uint8_t data[32], signature[64];
+  EXPECT_OK(s.SignInit(prv, &mech));
+  EXPECT_OK(s.SignUpdate(data));
+  EXPECT_OK(s.SignFinal(absl::MakeSpan(signature)));
+
+  s.ReleaseOperation();
+
+  EXPECT_OK(s.VerifyInit(pub, &mech));
+  EXPECT_OK(s.VerifyUpdate(data));
+  EXPECT_OK(s.VerifyFinal(absl::MakeSpan(signature)));
+}
+
+TEST_F(SessionTest, GenerateRandomSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<uint8_t> zero(32, '\0');
+  std::vector<uint8_t> rand(zero);
+  EXPECT_OK(s.GenerateRandom(absl::MakeSpan(rand)));
+  EXPECT_THAT(rand, Not(ElementsAreArray(zero)));
+}
+
+TEST_F(SessionTest, GenerateRandomSuccessMinBufferSize) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<uint8_t> zero(8, '\0');
+  std::vector<uint8_t> rand(zero);
+  EXPECT_OK(s.GenerateRandom(absl::MakeSpan(rand)));
+  EXPECT_THAT(rand, Not(ElementsAreArray(zero)));
+}
+
+TEST_F(SessionTest, GenerateRandomSuccessMaxBufferSize) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<uint8_t> zero(1024, '\0');
+  std::vector<uint8_t> rand(zero);
+  EXPECT_OK(s.GenerateRandom(absl::MakeSpan(rand)));
+  EXPECT_THAT(rand, Not(ElementsAreArray(zero)));
+}
+
+TEST_F(SessionTest, GenerateRandomFailureUndersizedBuffer) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<uint8_t> rand(7);
+  EXPECT_THAT(s.GenerateRandom(absl::MakeSpan(rand)),
+              AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
+                    StatusRvIs(CKR_ARGUMENTS_BAD)));
+}
+
+TEST_F(SessionTest, GenerateRandomFailureOversizedBuffer) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<Token> token,
+                       Token::New(0, config_, client_.get()));
+  Session s(token.get(), SessionType::kReadOnly, client_.get());
+
+  std::vector<uint8_t> rand(1025);
+  EXPECT_THAT(s.GenerateRandom(absl::MakeSpan(rand)),
+              AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
+                    StatusRvIs(CKR_ARGUMENTS_BAD)));
 }
 
 class GenerateKeyPairTest : public SessionTest {};
@@ -1075,4 +1480,4 @@ TEST_F(DestroyObjectTest, DestroyedKeyPairIsImmediatelyAbsent) {
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

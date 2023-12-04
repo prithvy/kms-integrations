@@ -16,12 +16,12 @@
 
 #include <regex>
 
+#include "common/kms_client.h"
+#include "common/status_macros.h"
 #include "kmsp11/kmsp11.h"
 #include "kmsp11/util/errors.h"
-#include "kmsp11/util/kms_client.h"
-#include "kmsp11/util/status_macros.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 absl::Status SessionReadOnlyError(const SourceLocation& source_location) {
@@ -73,13 +73,12 @@ absl::StatusOr<KeyGenerationParams> ExtractKeyGenerationParams(
   }
 
   if (!label.has_value()) {
-    return NewInvalidArgumentError(
-        "CKA_LABEL must be specified for the private key",
-        CKR_TEMPLATE_INCOMPLETE, SOURCE_LOCATION);
+    return NewInvalidArgumentError("CKA_LABEL must be specified for the key",
+                                   CKR_TEMPLATE_INCOMPLETE, SOURCE_LOCATION);
   }
   if (!algorithm.has_value()) {
     return NewInvalidArgumentError(
-        "CKA_KMS_ALGORITHM must be specified for the private key",
+        "CKA_KMS_ALGORITHM must be specified for the key",
         CKR_TEMPLATE_INCOMPLETE, SOURCE_LOCATION);
   }
 
@@ -95,10 +94,10 @@ absl::StatusOr<KeyGenerationParams> ExtractKeyGenerationParams(
 
 absl::StatusOr<kms_v1::CryptoKeyVersion> CreateNewVersionOfExistingKey(
     const KmsClient& client, const kms_v1::CryptoKey& crypto_key,
-    const KeyGenerationParams& prv_gen_params) {
-  if (crypto_key.purpose() != prv_gen_params.algorithm.purpose ||
+    const KeyGenerationParams& gen_params) {
+  if (crypto_key.purpose() != gen_params.algorithm.purpose ||
       crypto_key.version_template().algorithm() !=
-          prv_gen_params.algorithm.algorithm ||
+          gen_params.algorithm.algorithm ||
       crypto_key.version_template().protection_level() != kms_v1::HSM) {
     return NewError(
         absl::StatusCode::kInvalidArgument,
@@ -108,9 +107,9 @@ absl::StatusOr<kms_v1::CryptoKeyVersion> CreateNewVersionOfExistingKey(
                         "current algorithm=%d, requested algorithm=%d; "
                         "current protection_level=%d, "
                         "requested protection_level=%d",
-                        crypto_key.purpose(), prv_gen_params.algorithm.purpose,
+                        crypto_key.purpose(), gen_params.algorithm.purpose,
                         crypto_key.version_template().algorithm(),
-                        prv_gen_params.algorithm.algorithm,
+                        gen_params.algorithm.algorithm,
                         crypto_key.version_template().protection_level(),
                         kms_v1::HSM),
         CKR_ARGUMENTS_BAD, SOURCE_LOCATION);
@@ -122,18 +121,17 @@ absl::StatusOr<kms_v1::CryptoKeyVersion> CreateNewVersionOfExistingKey(
 
 absl::StatusOr<CryptoKeyAndVersion> CreateKeyAndVersion(
     const KmsClient& client, std::string_view key_ring_name,
-    const KeyGenerationParams& prv_gen_params,
+    const KeyGenerationParams& gen_params,
     bool experimental_create_multiple_versions) {
   if (experimental_create_multiple_versions) {
     kms_v1::GetCryptoKeyRequest req;
-    req.set_name(
-        absl::StrCat(key_ring_name, "/cryptoKeys/", prv_gen_params.label));
+    req.set_name(absl::StrCat(key_ring_name, "/cryptoKeys/", gen_params.label));
     absl::StatusOr<kms_v1::CryptoKey> ck = client.GetCryptoKey(req);
     switch (ck.status().code()) {
       case absl::StatusCode::kOk: {
         ASSIGN_OR_RETURN(
             kms_v1::CryptoKeyVersion ckv,
-            CreateNewVersionOfExistingKey(client, *ck, prv_gen_params));
+            CreateNewVersionOfExistingKey(client, *ck, gen_params));
         return CryptoKeyAndVersion{*ck, ckv};
       }
       case absl::StatusCode::kNotFound:
@@ -146,10 +144,10 @@ absl::StatusOr<CryptoKeyAndVersion> CreateKeyAndVersion(
 
   kms_v1::CreateCryptoKeyRequest req;
   req.set_parent(std::string(key_ring_name));
-  req.set_crypto_key_id(prv_gen_params.label);
-  req.mutable_crypto_key()->set_purpose(prv_gen_params.algorithm.purpose);
+  req.set_crypto_key_id(gen_params.label);
+  req.mutable_crypto_key()->set_purpose(gen_params.algorithm.purpose);
   req.mutable_crypto_key()->mutable_version_template()->set_algorithm(
-      prv_gen_params.algorithm.algorithm);
+      gen_params.algorithm.algorithm);
   req.mutable_crypto_key()->mutable_version_template()->set_protection_level(
       kms_v1::HSM);
 
@@ -166,11 +164,11 @@ absl::StatusOr<CryptoKeyAndVersion> CreateKeyAndVersion(
       // purposes of the experiment.
       return key_and_version.status();
     }
-    return NewError(absl::StatusCode::kAlreadyExists,
-                    absl::StrFormat("key with label %s already exists: %s",
-                                    prv_gen_params.label,
-                                    key_and_version.status().message()),
-                    CKR_ARGUMENTS_BAD, SOURCE_LOCATION);
+    return NewError(
+        absl::StatusCode::kAlreadyExists,
+        absl::StrFormat("key with label %s already exists: %s",
+                        gen_params.label, key_and_version.status().message()),
+        CKR_ARGUMENTS_BAD, SOURCE_LOCATION);
   }
   return key_and_version;
 }
@@ -231,18 +229,18 @@ absl::StatusOr<absl::Span<const CK_OBJECT_HANDLE>> Session::FindObjects(
     size_t max_count) {
   absl::MutexLock l(&op_mutex_);
 
-  if (!op_.has_value() || !std::holds_alternative<FindOp>(op_.value())) {
+  if (!op_.has_value() || !std::holds_alternative<FindOp>(*op_)) {
     return OperationNotInitializedError("find", SOURCE_LOCATION);
   }
 
-  FindOp& op = std::get<FindOp>(op_.value());
+  FindOp& op = std::get<FindOp>(*op_);
   return op.Next(max_count);
 }
 
 absl::Status Session::FindObjectsFinal() {
   absl::MutexLock l(&op_mutex_);
 
-  if (!op_.has_value() || !std::holds_alternative<FindOp>(op_.value())) {
+  if (!op_.has_value() || !std::holds_alternative<FindOp>(*op_)) {
     return OperationNotInitializedError("find", SOURCE_LOCATION);
   }
 
@@ -266,11 +264,31 @@ absl::StatusOr<absl::Span<const uint8_t>> Session::Decrypt(
     absl::Span<const uint8_t> ciphertext) {
   absl::MutexLock l(&op_mutex_);
 
-  if (!op_.has_value() || !std::holds_alternative<DecryptOp>(op_.value())) {
+  if (!op_.has_value() || !std::holds_alternative<DecryptOp>(*op_)) {
     return OperationNotInitializedError("decrypt", SOURCE_LOCATION);
   }
 
-  return std::get<DecryptOp>(op_.value())->Decrypt(kms_client_, ciphertext);
+  return std::get<DecryptOp>(*op_)->Decrypt(kms_client_, ciphertext);
+}
+
+absl::Status Session::DecryptUpdate(absl::Span<const uint8_t> ciphertext) {
+  absl::MutexLock l(&op_mutex_);
+
+  if (!op_.has_value() || !std::holds_alternative<DecryptOp>(*op_)) {
+    return OperationNotInitializedError("decrypt", SOURCE_LOCATION);
+  }
+
+  return std::get<DecryptOp>(*op_)->DecryptUpdate(kms_client_, ciphertext);
+}
+
+absl::StatusOr<absl::Span<const uint8_t>> Session::DecryptFinal() {
+  absl::MutexLock l(&op_mutex_);
+
+  if (!op_.has_value() || !std::holds_alternative<DecryptOp>(*op_)) {
+    return OperationNotInitializedError("decrypt", SOURCE_LOCATION);
+  }
+
+  return std::get<DecryptOp>(*op_)->DecryptFinal(kms_client_);
 }
 
 absl::Status Session::EncryptInit(std::shared_ptr<Object> key,
@@ -289,11 +307,30 @@ absl::StatusOr<absl::Span<const uint8_t>> Session::Encrypt(
     absl::Span<const uint8_t> plaintext) {
   absl::MutexLock l(&op_mutex_);
 
-  if (!op_.has_value() || !std::holds_alternative<EncryptOp>(op_.value())) {
+  if (!op_.has_value() || !std::holds_alternative<EncryptOp>(*op_)) {
     return OperationNotInitializedError("encrypt", SOURCE_LOCATION);
   }
 
-  return std::get<EncryptOp>(op_.value())->Encrypt(kms_client_, plaintext);
+  return std::get<EncryptOp>(*op_)->Encrypt(kms_client_, plaintext);
+}
+
+absl::Status Session::EncryptUpdate(absl::Span<const uint8_t> plaintext) {
+  absl::MutexLock l(&op_mutex_);
+
+  if (!op_.has_value() || !std::holds_alternative<EncryptOp>(*op_)) {
+    return OperationNotInitializedError("encrypt", SOURCE_LOCATION);
+  }
+
+  return std::get<EncryptOp>(*op_)->EncryptUpdate(kms_client_, plaintext);
+}
+absl::StatusOr<absl::Span<const uint8_t>> Session::EncryptFinal() {
+  absl::MutexLock l(&op_mutex_);
+
+  if (!op_.has_value() || !std::holds_alternative<EncryptOp>(*op_)) {
+    return OperationNotInitializedError("encrypt", SOURCE_LOCATION);
+  }
+
+  return std::get<EncryptOp>(*op_)->EncryptFinal(kms_client_);
 }
 
 absl::Status Session::SignInit(std::shared_ptr<Object> key,
@@ -312,21 +349,41 @@ absl::Status Session::Sign(absl::Span<const uint8_t> digest,
                            absl::Span<uint8_t> signature) {
   absl::MutexLock l(&op_mutex_);
 
-  if (!op_.has_value() || !std::holds_alternative<SignOp>(op_.value())) {
+  if (!op_.has_value() || !std::holds_alternative<SignOp>(*op_)) {
     return OperationNotInitializedError("sign", SOURCE_LOCATION);
   }
 
-  return std::get<SignOp>(op_.value())->Sign(kms_client_, digest, signature);
+  return std::get<SignOp>(*op_)->Sign(kms_client_, digest, signature);
+}
+
+absl::Status Session::SignUpdate(absl::Span<const uint8_t> data) {
+  absl::MutexLock l(&op_mutex_);
+
+  if (!op_.has_value() || !std::holds_alternative<SignOp>(*op_)) {
+    return OperationNotInitializedError("sign", SOURCE_LOCATION);
+  }
+
+  return std::get<SignOp>(*op_)->SignUpdate(kms_client_, data);
+}
+
+absl::Status Session::SignFinal(absl::Span<uint8_t> signature) {
+  absl::MutexLock l(&op_mutex_);
+
+  if (!op_.has_value() || !std::holds_alternative<SignOp>(*op_)) {
+    return OperationNotInitializedError("sign", SOURCE_LOCATION);
+  }
+
+  return std::get<SignOp>(*op_)->SignFinal(kms_client_, signature);
 }
 
 absl::StatusOr<size_t> Session::SignatureLength() {
   absl::MutexLock l(&op_mutex_);
 
-  if (!op_.has_value() || !std::holds_alternative<SignOp>(op_.value())) {
+  if (!op_.has_value() || !std::holds_alternative<SignOp>(*op_)) {
     return OperationNotInitializedError("sign", SOURCE_LOCATION);
   }
 
-  return std::get<SignOp>(op_.value())->signature_length();
+  return std::get<SignOp>(*op_)->signature_length();
 }
 
 absl::Status Session::VerifyInit(std::shared_ptr<Object> key,
@@ -345,12 +402,31 @@ absl::Status Session::Verify(absl::Span<const uint8_t> digest,
                              absl::Span<const uint8_t> signature) {
   absl::MutexLock l(&op_mutex_);
 
-  if (!op_.has_value() || !std::holds_alternative<VerifyOp>(op_.value())) {
+  if (!op_.has_value() || !std::holds_alternative<VerifyOp>(*op_)) {
     return OperationNotInitializedError("verify", SOURCE_LOCATION);
   }
 
-  return std::get<VerifyOp>(op_.value())
-      ->Verify(kms_client_, digest, signature);
+  return std::get<VerifyOp>(*op_)->Verify(kms_client_, digest, signature);
+}
+
+absl::Status Session::VerifyUpdate(absl::Span<const uint8_t> data) {
+  absl::MutexLock l(&op_mutex_);
+
+  if (!op_.has_value() || !std::holds_alternative<VerifyOp>(*op_)) {
+    return OperationNotInitializedError("verify", SOURCE_LOCATION);
+  }
+
+  return std::get<VerifyOp>(*op_)->VerifyUpdate(kms_client_, data);
+}
+
+absl::Status Session::VerifyFinal(absl::Span<const uint8_t> signature) {
+  absl::MutexLock l(&op_mutex_);
+
+  if (!op_.has_value() || !std::holds_alternative<VerifyOp>(*op_)) {
+    return OperationNotInitializedError("verify", SOURCE_LOCATION);
+  }
+
+  return std::get<VerifyOp>(*op_)->VerifyFinal(kms_client_, signature);
 }
 
 absl::StatusOr<AsymmetricHandleSet> Session::GenerateKeyPair(
@@ -411,6 +487,46 @@ absl::StatusOr<AsymmetricHandleSet> Session::GenerateKeyPair(
   return result;
 }
 
+absl::StatusOr<CK_OBJECT_HANDLE> Session::GenerateKey(
+    const CK_MECHANISM& mechanism,
+    absl::Span<const CK_ATTRIBUTE> secret_key_attrs,
+    bool experimental_create_multiple_versions) {
+  if (session_type_ == SessionType::kReadOnly) {
+    return SessionReadOnlyError(SOURCE_LOCATION);
+  }
+
+  switch (mechanism.mechanism) {
+    case CKM_GENERIC_SECRET_KEY_GEN:
+      break;
+    default:
+      return InvalidMechanismError(mechanism.mechanism, "GenerateKey",
+                                   SOURCE_LOCATION);
+  }
+  if (mechanism.pParameter || mechanism.ulParameterLen > 0) {
+    return InvalidMechanismParamError(
+        "key generation mechanisms do not take parameters", SOURCE_LOCATION);
+  }
+
+  ASSIGN_OR_RETURN(KeyGenerationParams gen_params,
+                   ExtractKeyGenerationParams(secret_key_attrs));
+
+  if (gen_params.algorithm.key_gen_mechanism != mechanism.mechanism) {
+    return NewInvalidArgumentError("algorithm mismatches keygen mechanism",
+                                   CKR_TEMPLATE_INCONSISTENT, SOURCE_LOCATION);
+  }
+
+  ASSIGN_OR_RETURN(
+      CryptoKeyAndVersion key_and_version,
+      CreateKeyAndVersion(*kms_client_, token_->key_ring_name(), gen_params,
+                          experimental_create_multiple_versions));
+  RETURN_IF_ERROR(token_->RefreshState(*kms_client_));
+
+  return token_->FindSingleObject([&](const Object& o) -> bool {
+    return o.kms_key_name() == key_and_version.crypto_key_version.name() &&
+           o.object_class() == CKO_SECRET_KEY;
+  });
+}
+
 absl::Status Session::DestroyObject(std::shared_ptr<Object> key) {
   if (session_type_ == SessionType::kReadOnly) {
     return SessionReadOnlyError(SOURCE_LOCATION);
@@ -430,4 +546,30 @@ absl::Status Session::DestroyObject(std::shared_ptr<Object> key) {
   return absl::OkStatus();
 }
 
-}  // namespace kmsp11
+absl::Status Session::GenerateRandom(absl::Span<uint8_t> buffer) {
+  if (buffer.size() < 8 || buffer.size() > 1024) {
+    return NewError(
+        absl::StatusCode::kInvalidArgument,
+        "GenerateRandom buffer length must be between 8 and 1024 bytes",
+        CKR_ARGUMENTS_BAD, SOURCE_LOCATION);
+  }
+
+  kms_v1::GenerateRandomBytesRequest req;
+  req.set_protection_level(kms_v1::HSM);
+  req.set_length_bytes(buffer.size());
+  req.set_location(*ExtractLocationName(token_->key_ring_name()));
+
+  ASSIGN_OR_RETURN(kms_v1::GenerateRandomBytesResponse resp,
+                   kms_client_->GenerateRandomBytes(req));
+  if (resp.data().size() != buffer.size()) {
+    return NewInternalError(
+        absl::StrFormat("requested %d bytes of data from KMS but received %d",
+                        buffer.size(), resp.data().size()),
+        SOURCE_LOCATION);
+  }
+
+  std::copy(resp.data().begin(), resp.data().end(), buffer.data());
+  return absl::OkStatus();
+}
+
+}  // namespace cloud_kms::kmsp11

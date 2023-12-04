@@ -14,13 +14,14 @@
 
 #include "kmsp11/operation/ecdsa.h"
 
+#include "common/test/test_status_macros.h"
 #include "fakekms/cpp/fakekms.h"
 #include "kmsp11/object.h"
+#include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "kmsp11/util/crypto_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::AllOf;
@@ -33,7 +34,7 @@ TEST(NewSignerTest, ParamInvalid) {
 
   char buf[1];
   CK_MECHANISM mechanism{CKM_ECDSA, buf, sizeof(buf)};
-  EXPECT_THAT(EcdsaSigner::New(key, &mechanism),
+  EXPECT_THAT(NewEcdsaSigner(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -45,7 +46,7 @@ TEST(NewSignerTest, FailureWrongKeyType) {
   std::shared_ptr<Object> key = std::make_shared<Object>(kp.private_key);
 
   CK_MECHANISM mechanism{CKM_ECDSA, nullptr, 0};
-  EXPECT_THAT(EcdsaSigner::New(key, &mechanism),
+  EXPECT_THAT(NewEcdsaSigner(key, &mechanism),
               StatusRvIs(CKR_KEY_TYPE_INCONSISTENT));
 }
 
@@ -56,7 +57,7 @@ TEST(NewSignerTest, FailureWrongObjectClass) {
   std::shared_ptr<Object> key = std::make_shared<Object>(kp.public_key);
 
   CK_MECHANISM mechanism{CKM_ECDSA, nullptr, 0};
-  EXPECT_THAT(EcdsaSigner::New(key, &mechanism),
+  EXPECT_THAT(NewEcdsaSigner(key, &mechanism),
               StatusRvIs(CKR_KEY_FUNCTION_NOT_PERMITTED));
 }
 
@@ -68,7 +69,7 @@ TEST(NewVerifierTest, ParamInvalid) {
 
   char buf[1];
   CK_MECHANISM mechanism{CKM_ECDSA, buf, sizeof(buf)};
-  EXPECT_THAT(EcdsaVerifier::New(key, &mechanism),
+  EXPECT_THAT(NewEcdsaVerifier(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -80,7 +81,7 @@ TEST(NewVerifierTest, FailureWrongKeyType) {
   std::shared_ptr<Object> key = std::make_shared<Object>(kp.public_key);
 
   CK_MECHANISM mechanism{CKM_ECDSA, nullptr, 0};
-  EXPECT_THAT(EcdsaVerifier::New(key, &mechanism),
+  EXPECT_THAT(NewEcdsaVerifier(key, &mechanism),
               StatusRvIs(CKR_KEY_TYPE_INCONSISTENT));
 }
 
@@ -91,7 +92,7 @@ TEST(NewVerifierTest, FailureWrongObjectClass) {
   std::shared_ptr<Object> key = std::make_shared<Object>(kp.private_key);
 
   CK_MECHANISM mechanism{CKM_ECDSA, nullptr, 0};
-  EXPECT_THAT(EcdsaVerifier::New(key, &mechanism),
+  EXPECT_THAT(NewEcdsaVerifier(key, &mechanism),
               StatusRvIs(CKR_KEY_FUNCTION_NOT_PERMITTED));
 }
 
@@ -99,9 +100,10 @@ class EcdsaTest : public testing::Test {
  protected:
   void SetUp() override {
     ASSERT_OK_AND_ASSIGN(fake_server_, fakekms::Server::New());
-    client_ = std::make_unique<KmsClient>(fake_server_->listen_addr(),
-                                           grpc::InsecureChannelCredentials(),
-                                           absl::Seconds(1));
+    client_ = std::make_unique<KmsClient>(KmsClient::Options{
+        .endpoint_address = fake_server_->listen_addr(),
+        .rpc_timeout = absl::Seconds(1),
+    });
 
     auto fake_client = fake_server_->NewClient();
 
@@ -120,7 +122,7 @@ class EcdsaTest : public testing::Test {
 
     kms_key_name_ = ckv.name();
 
-    kms_v1::PublicKey pub_proto = GetPublicKey(fake_client.get(), ckv);
+    kms_v1::PublicKey pub_proto = GetPublicKeyOrDie(fake_client.get(), ckv);
     ASSERT_OK_AND_ASSIGN(public_key_, ParseX509PublicKeyPem(pub_proto.pem()));
 
     ASSERT_OK_AND_ASSIGN(KeyPair kp,
@@ -143,7 +145,7 @@ TEST_F(EcdsaTest, SignSuccess) {
 
   CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       EcdsaSigner::New(prv_, &mech));
+                       NewEcdsaSigner(prv_, &mech));
   std::vector<uint8_t> sig(signer->signature_length());
   EXPECT_OK(signer->Sign(client_.get(), digest, absl::MakeSpan(sig)));
 
@@ -156,7 +158,7 @@ TEST_F(EcdsaTest, SignDigestLengthInvalid) {
 
   CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       EcdsaSigner::New(prv_, &mech));
+                       NewEcdsaSigner(prv_, &mech));
 
   EXPECT_THAT(signer->Sign(client_.get(), digest, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
@@ -168,7 +170,7 @@ TEST_F(EcdsaTest, SignSignatureLengthInvalid) {
 
   CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       EcdsaSigner::New(prv_, &mech));
+                       NewEcdsaSigner(prv_, &mech));
 
   EXPECT_THAT(signer->Sign(client_.get(), digest, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInternal),
@@ -182,12 +184,12 @@ TEST_F(EcdsaTest, SignVerifySuccess) {
 
   CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       EcdsaSigner::New(prv_, &mech));
+                       NewEcdsaSigner(prv_, &mech));
   std::vector<uint8_t> sig(signer->signature_length());
   EXPECT_OK(signer->Sign(client_.get(), digest, absl::MakeSpan(sig)));
 
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       EcdsaVerifier::New(pub_, &mech));
+                       NewEcdsaVerifier(pub_, &mech));
   EXPECT_OK(verifier->Verify(client_.get(), digest, sig));
 }
 
@@ -196,7 +198,7 @@ TEST_F(EcdsaTest, VerifyDigestLengthInvalid) {
 
   CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       EcdsaVerifier::New(pub_, &mech));
+                       NewEcdsaVerifier(pub_, &mech));
 
   EXPECT_THAT(verifier->Verify(client_.get(), digest, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
@@ -208,7 +210,7 @@ TEST_F(EcdsaTest, VerifySignatureLengthInvalid) {
 
   CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       EcdsaVerifier::New(pub_, &mech));
+                       NewEcdsaVerifier(pub_, &mech));
 
   EXPECT_THAT(verifier->Verify(client_.get(), digest, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
@@ -222,11 +224,30 @@ TEST_F(EcdsaTest, VerifyBadSignature) {
 
   CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       EcdsaVerifier::New(pub_, &mech));
+                       NewEcdsaVerifier(pub_, &mech));
   EXPECT_THAT(verifier->Verify(client_.get(), digest, sig),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
                     StatusRvIs(CKR_SIGNATURE_INVALID)));
 }
 
+TEST_F(EcdsaTest, SignVerifyMultiPartSuccess) {
+  std::vector<uint8_t> data_part1 = {0xDE, 0xAD};
+  std::vector<uint8_t> data_part2 = {0xBE, 0xEF};
+
+  CK_MECHANISM mech{CKM_ECDSA_SHA384, nullptr, 0};
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
+                       NewEcdsaSigner(prv_, &mech));
+  std::vector<uint8_t> sig(signer->signature_length());
+  EXPECT_OK(signer->SignUpdate(client_.get(), data_part1));
+  EXPECT_OK(signer->SignUpdate(client_.get(), data_part2));
+  EXPECT_OK(signer->SignFinal(client_.get(), absl::MakeSpan(sig)));
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
+                       NewEcdsaVerifier(pub_, &mech));
+  EXPECT_OK(verifier->VerifyUpdate(client_.get(), data_part1));
+  EXPECT_OK(verifier->VerifyUpdate(client_.get(), data_part2));
+  EXPECT_OK(verifier->VerifyFinal(client_.get(), absl::MakeSpan(sig)));
+}
+
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

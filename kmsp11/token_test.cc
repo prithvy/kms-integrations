@@ -14,15 +14,15 @@
 
 #include "kmsp11/token.h"
 
+#include "common/kms_client.h"
+#include "common/test/test_status_macros.h"
 #include "fakekms/cpp/fakekms.h"
 #include "gmock/gmock.h"
 #include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/test_status_macros.h"
-#include "kmsp11/util/kms_client.h"
 #include "kmsp11/util/string_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::AllOf;
@@ -43,9 +43,10 @@ class TokenTest : public testing::Test {
                                    key_ring_);
 
     config_.set_key_ring(key_ring_.name());
-    client_ = std::make_unique<KmsClient>(fake_server_->listen_addr(),
-                                           grpc::InsecureChannelCredentials(),
-                                           absl::Seconds(1));
+    client_ = std::make_unique<KmsClient>(KmsClient::Options{
+        .endpoint_address = fake_server_->listen_addr(),
+        .rpc_timeout = absl::Seconds(1),
+    });
   }
 
   std::unique_ptr<fakekms::Server> fake_server_;
@@ -520,4 +521,4 @@ TEST_F(TokenTest, CertNotGeneratedWhenConfigIsUnset) {
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

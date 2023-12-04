@@ -14,45 +14,18 @@
 
 #include "kmsp11/operation/rsassa_pkcs1.h"
 
+#include "common/test/test_status_macros.h"
 #include "fakekms/cpp/fakekms.h"
 #include "kmsp11/object.h"
+#include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "kmsp11/util/crypto_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::AllOf;
 using ::testing::HasSubstr;
-
-// Build a DigestInfo structure, which is the expected input into a CKM_RSA_PKCS
-// signing operation.
-// http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc441850410
-absl::StatusOr<std::vector<uint8_t>> BuildRsaDigestInfo(
-    int digest_nid, absl::Span<const uint8_t> digest) {
-  X509_ALGOR* algorithm;
-  ASN1_OCTET_STRING* dig;
-  bssl::UniquePtr<X509_SIG> digest_info(X509_SIG_new());
-  X509_SIG_getm(digest_info.get(), &algorithm, &dig);
-
-  if (X509_ALGOR_set0(algorithm, OBJ_nid2obj(digest_nid), V_ASN1_NULL,
-                      nullptr) != 1) {
-    return absl::InternalError(absl::StrCat(
-        "failure setting algorithm parameters: ", SslErrorToString()));
-  }
-  if (ASN1_OCTET_STRING_set(dig, digest.data(), digest.size()) != 1) {
-    return absl::InternalError(
-        absl::StrCat("failure setting digest value: ", SslErrorToString()));
-  }
-
-  ASSIGN_OR_RETURN(std::string digest_info_der,
-                   MarshalX509Sig(digest_info.get()));
-  return std::vector<uint8_t>(
-      reinterpret_cast<const uint8_t*>(digest_info_der.data()),
-      reinterpret_cast<const uint8_t*>(digest_info_der.data() +
-                                       digest_info_der.size()));
-}
 
 TEST(NewSignerTest, ParamInvalid) {
   ASSERT_OK_AND_ASSIGN(
@@ -63,7 +36,7 @@ TEST(NewSignerTest, ParamInvalid) {
 
   char buf[1];
   CK_MECHANISM mechanism{CKM_RSA_PKCS, buf, sizeof(buf)};
-  EXPECT_THAT(RsaPkcs1Signer::New(key, &mechanism),
+  EXPECT_THAT(NewRsaPkcs1Signer(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -74,7 +47,7 @@ TEST(NewSignerTest, FailureWrongKeyType) {
   std::shared_ptr<Object> key = std::make_shared<Object>(kp.private_key);
 
   CK_MECHANISM mechanism{CKM_RSA_PKCS, nullptr, 0};
-  EXPECT_THAT(RsaPkcs1Signer::New(key, &mechanism),
+  EXPECT_THAT(NewRsaPkcs1Signer(key, &mechanism),
               StatusRvIs(CKR_KEY_TYPE_INCONSISTENT));
 }
 
@@ -86,7 +59,7 @@ TEST(NewSignerTest, FailureWrongObjectClass) {
   std::shared_ptr<Object> key = std::make_shared<Object>(kp.public_key);
 
   CK_MECHANISM mechanism{CKM_RSA_PKCS, nullptr, 0};
-  EXPECT_THAT(RsaPkcs1Signer::New(key, &mechanism),
+  EXPECT_THAT(NewRsaPkcs1Signer(key, &mechanism),
               StatusRvIs(CKR_KEY_FUNCTION_NOT_PERMITTED));
 }
 
@@ -99,7 +72,7 @@ TEST(NewVerifierTest, ParamInvalid) {
 
   char buf[1];
   CK_MECHANISM mechanism{CKM_RSA_PKCS, buf, sizeof(buf)};
-  EXPECT_THAT(RsaPkcs1Verifier::New(key, &mechanism),
+  EXPECT_THAT(NewRsaPkcs1Verifier(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -110,7 +83,7 @@ TEST(NewVerifierTest, FailureWrongKeyType) {
   std::shared_ptr<Object> key = std::make_shared<Object>(kp.public_key);
 
   CK_MECHANISM mechanism{CKM_RSA_PKCS, nullptr, 0};
-  EXPECT_THAT(RsaPkcs1Verifier::New(key, &mechanism),
+  EXPECT_THAT(NewRsaPkcs1Verifier(key, &mechanism),
               StatusRvIs(CKR_KEY_TYPE_INCONSISTENT));
 }
 
@@ -122,7 +95,7 @@ TEST(NewVerifierTest, FailureWrongObjectClass) {
   std::shared_ptr<Object> key = std::make_shared<Object>(kp.private_key);
 
   CK_MECHANISM mechanism{CKM_RSA_PKCS, nullptr, 0};
-  EXPECT_THAT(RsaPkcs1Verifier::New(key, &mechanism),
+  EXPECT_THAT(NewRsaPkcs1Verifier(key, &mechanism),
               StatusRvIs(CKR_KEY_FUNCTION_NOT_PERMITTED));
 }
 
@@ -130,9 +103,10 @@ class RsaPkcs1Test : public testing::Test {
  protected:
   void SetUp() override {
     ASSERT_OK_AND_ASSIGN(fake_server_, fakekms::Server::New());
-    client_ = std::make_unique<KmsClient>(fake_server_->listen_addr(),
-                                           grpc::InsecureChannelCredentials(),
-                                           absl::Seconds(1));
+    client_ = std::make_unique<KmsClient>(KmsClient::Options{
+        .endpoint_address = fake_server_->listen_addr(),
+        .rpc_timeout = absl::Seconds(1),
+    });
 
     auto fake_client = fake_server_->NewClient();
 
@@ -151,7 +125,7 @@ class RsaPkcs1Test : public testing::Test {
 
     kms_key_name_ = ckv.name();
 
-    kms_v1::PublicKey pub_proto = GetPublicKey(fake_client.get(), ckv);
+    kms_v1::PublicKey pub_proto = GetPublicKeyOrDie(fake_client.get(), ckv);
     ASSERT_OK_AND_ASSIGN(public_key_, ParseX509PublicKeyPem(pub_proto.pem()));
 
     ASSERT_OK_AND_ASSIGN(KeyPair kp,
@@ -176,7 +150,7 @@ TEST_F(RsaPkcs1Test, SignSuccess) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       RsaPkcs1Signer::New(prv_, &mech));
+                       NewRsaPkcs1Signer(prv_, &mech));
   std::vector<uint8_t> sig(signer->signature_length());
   EXPECT_OK(signer->Sign(client_.get(), digest_info, absl::MakeSpan(sig)));
 
@@ -190,7 +164,7 @@ TEST_F(RsaPkcs1Test, SignUnparseableDigestInfo) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       RsaPkcs1Signer::New(prv_, &mech));
+                       NewRsaPkcs1Signer(prv_, &mech));
 
   EXPECT_THAT(signer->Sign(client_.get(), digest_info, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument,
@@ -205,7 +179,7 @@ TEST_F(RsaPkcs1Test, SignWrongDigestType) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       RsaPkcs1Signer::New(prv_, &mech));
+                       NewRsaPkcs1Signer(prv_, &mech));
 
   EXPECT_THAT(signer->Sign(client_.get(), digest_info, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument,
@@ -220,7 +194,7 @@ TEST_F(RsaPkcs1Test, SignDigestLengthInvalid) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       RsaPkcs1Signer::New(prv_, &mech));
+                       NewRsaPkcs1Signer(prv_, &mech));
 
   EXPECT_THAT(signer->Sign(client_.get(), digest_info, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
@@ -234,7 +208,7 @@ TEST_F(RsaPkcs1Test, SignSignatureLengthInvalid) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       RsaPkcs1Signer::New(prv_, &mech));
+                       NewRsaPkcs1Signer(prv_, &mech));
 
   EXPECT_THAT(signer->Sign(client_.get(), digest_info, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInternal),
@@ -251,12 +225,12 @@ TEST_F(RsaPkcs1Test, SignVerifySuccess) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
-                       RsaPkcs1Signer::New(prv_, &mech));
+                       NewRsaPkcs1Signer(prv_, &mech));
   std::vector<uint8_t> sig(signer->signature_length());
   EXPECT_OK(signer->Sign(client_.get(), digest_info, absl::MakeSpan(sig)));
 
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       RsaPkcs1Verifier::New(pub_, &mech));
+                       NewRsaPkcs1Verifier(pub_, &mech));
   EXPECT_OK(verifier->Verify(client_.get(), digest_info, sig));
 }
 
@@ -266,7 +240,7 @@ TEST_F(RsaPkcs1Test, VerifyUnparseableDigestInfo) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       RsaPkcs1Verifier::New(pub_, &mech));
+                       NewRsaPkcs1Verifier(pub_, &mech));
 
   EXPECT_THAT(verifier->Verify(client_.get(), digest_info, sig),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument,
@@ -281,7 +255,7 @@ TEST_F(RsaPkcs1Test, VerifyWrongDigestType) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       RsaPkcs1Verifier::New(pub_, &mech));
+                       NewRsaPkcs1Verifier(pub_, &mech));
 
   EXPECT_THAT(verifier->Verify(client_.get(), digest_info, sig),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument,
@@ -296,7 +270,7 @@ TEST_F(RsaPkcs1Test, VerifyDigestLengthInvalid) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       RsaPkcs1Verifier::New(pub_, &mech));
+                       NewRsaPkcs1Verifier(pub_, &mech));
 
   EXPECT_THAT(verifier->Verify(client_.get(), digest_info, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
@@ -310,7 +284,7 @@ TEST_F(RsaPkcs1Test, VerifySignatureLengthInvalid) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       RsaPkcs1Verifier::New(pub_, &mech));
+                       NewRsaPkcs1Verifier(pub_, &mech));
 
   EXPECT_THAT(verifier->Verify(client_.get(), digest_info, absl::MakeSpan(sig)),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
@@ -327,11 +301,30 @@ TEST_F(RsaPkcs1Test, VerifyBadSignature) {
 
   CK_MECHANISM mech{CKM_RSA_PKCS, nullptr, 0};
   ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
-                       RsaPkcs1Verifier::New(pub_, &mech));
+                       NewRsaPkcs1Verifier(pub_, &mech));
   EXPECT_THAT(verifier->Verify(client_.get(), digest_info, sig),
               AllOf(StatusIs(absl::StatusCode::kInvalidArgument),
                     StatusRvIs(CKR_SIGNATURE_INVALID)));
 }
 
+TEST_F(RsaPkcs1Test, SignVerifyMultiPartSuccess) {
+  std::vector<uint8_t> data_part1 = {0xDE, 0xAD};
+  std::vector<uint8_t> data_part2 = {0xBE, 0xEF};
+
+  CK_MECHANISM mech{CKM_SHA256_RSA_PKCS, nullptr, 0};
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<SignerInterface> signer,
+                       NewRsaPkcs1Signer(prv_, &mech));
+  std::vector<uint8_t> sig(signer->signature_length());
+  EXPECT_OK(signer->SignUpdate(client_.get(), data_part1));
+  EXPECT_OK(signer->SignUpdate(client_.get(), data_part2));
+  EXPECT_OK(signer->SignFinal(client_.get(), absl::MakeSpan(sig)));
+
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifierInterface> verifier,
+                       NewRsaPkcs1Verifier(pub_, &mech));
+  EXPECT_OK(verifier->VerifyUpdate(client_.get(), data_part1));
+  EXPECT_OK(verifier->VerifyUpdate(client_.get(), data_part2));
+  EXPECT_OK(verifier->VerifyFinal(client_.get(), absl::MakeSpan(sig)));
+}
+
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

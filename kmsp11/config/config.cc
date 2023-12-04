@@ -16,13 +16,13 @@
 
 #include <cstdlib>
 
+#include "common/platform.h"
+#include "common/status_macros.h"
 #include "kmsp11/config/protoyaml.h"
 #include "kmsp11/util/errors.h"
-#include "kmsp11/util/platform.h"
-#include "kmsp11/util/status_macros.h"
 #include "yaml-cpp/yaml.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 // Exceptions are disallowed by our style guide. Wrap YAML::LoadFile (which may
@@ -63,9 +63,13 @@ absl::StatusOr<LibraryConfig> LoadConfigFromFile(
   // harmful. This allows better/more specific error messages on
   // missing/malformed file paths, and ought to be replaced for beta. (See
   // b/157499181).
-  RETURN_IF_ERROR(EnsureWriteProtected(config_path.c_str()));
+  absl::Status status = EnsureWriteProtected(config_path.c_str());
+  if (!status.ok()) {
+    SetErrorRv(status, CKR_GENERAL_ERROR);
+    return status;
+  }
 
   return config;
 }
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

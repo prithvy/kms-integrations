@@ -17,6 +17,8 @@
 # Fail on any error.
 set -e
 
+
+
 # Display commands being run.
 # WARNING: please only enable 'set -x' if necessary for debugging, and be very
 #  careful if you handle credentials (e.g. from Keystore) with 'set -x':
@@ -35,6 +37,9 @@ cd "${PROJECT_ROOT}"
 export RESULTS_DIR="${KOKORO_ARTIFACTS_DIR}/results"
 mkdir "${RESULTS_DIR}"
 
+sudo apt-get update
+sudo apt-get install -y libtinfo5
+
 # Pull in a more recent LLVM toolchain
 export LLVM_VERSION=10.0.1
 export LLVM_DIST="clang+llvm-${LLVM_VERSION}-x86_64-linux-gnu-ubuntu-16.04"
@@ -44,11 +49,26 @@ sudo tar xf "${KOKORO_GFILE_DIR}/${LLVM_DIST}.tar.xz" -C /opt
 echo "BAZEL_EXTRA_ARGS:"
 echo "${BAZEL_EXTRA_ARGS}"
 
-use_bazel.sh 4.2.1
+# Get Go and Bazelisk
+sudo tar xf "${KOKORO_GFILE_DIR}/go1.20.3.linux-amd64.tar.gz" -C /opt
+export GOROOT=/opt/go
+export GOPATH=${KOKORO_ARTIFACTS_DIR}/gopath
+${GOROOT}/bin/go install github.com/bazelbuild/bazelisk@latest
+shopt -s expand_aliases
+alias bazelisk=${GOPATH}/bin/bazelisk
 
-# Configure user.bazelrc with remote build caching options
+# Unwrap our wrapped service account key
+export GOOGLE_APPLICATION_CREDENTIALS=${KOKORO_ARTIFACTS_DIR}/oss-tools-ci-key.json
+${GOROOT}/bin/go run ./.kokoro/unwrap_key.go \
+  -wrapping_key_file=${KOKORO_KEYSTORE_DIR}/75220_token-wrapping-key \
+  -wrapped_key_file=${KOKORO_GFILE_DIR}/oss-tools-ci-key.json.enc \
+  > ${GOOGLE_APPLICATION_CREDENTIALS}
+
+# Configure user.bazelrc with remote build caching options and Google creds
 cp .kokoro/remote_cache.bazelrc user.bazelrc
-echo "build --remote_default_exec_properties=cache-silo-key=linux-san" >> user.bazelrc
+echo "build --remote_default_exec_properties=cache-silo-key=${KOKORO_JOB_NAME}" \
+  >> user.bazelrc
+echo "test --test_env=GOOGLE_APPLICATION_CREDENTIALS" >> user.bazelrc
 
 # Ensure that build outputs and test logs are uploaded even on failure
 _upload_artifacts() {
@@ -68,7 +88,10 @@ export BAZEL_CXXOPTS=-nostdinc++
 export BAZEL_LINKLIBS=-L${LLVM_ROOT}/lib:-lc++:-lc++abi:-Wl,-rpath=${LLVM_ROOT}/lib
 export SYMBOLIZER_PATH=${LLVM_ROOT}/bin/llvm-symbolizer
 
-bazel test ... \
+# Ensure Bazel version information is included in the build log
+bazelisk version
+
+bazelisk test ... \
   --keep_going \
   --test_env=ASAN_SYMBOLIZER_PATH=${SYMBOLIZER_PATH} \
   --test_env=TSAN_SYMBOLIZER_PATH=${SYMBOLIZER_PATH} \

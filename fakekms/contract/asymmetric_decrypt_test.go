@@ -26,12 +26,65 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	kmspb "google.golang.org/genproto/googleapis/cloud/kms/v1"
-	fmpb "google.golang.org/genproto/protobuf/field_mask"
+	"cloud.google.com/go/kms/apiv1/kmspb"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestAsymmetricDecrypt(t *testing.T) {
+	ctx := context.Background()
+	kr := client.CreateTestKR(ctx, t, &kmspb.CreateKeyRingRequest{Parent: location})
+	ck := client.CreateTestCK(ctx, t, &kmspb.CreateCryptoKeyRequest{
+		Parent: kr.Name,
+		CryptoKey: &kmspb.CryptoKey{
+			Purpose: kmspb.CryptoKey_ASYMMETRIC_DECRYPT,
+			VersionTemplate: &kmspb.CryptoKeyVersionTemplate{
+				Algorithm: kmspb.CryptoKeyVersion_RSA_DECRYPT_OAEP_2048_SHA256,
+			},
+		},
+		SkipInitialVersionCreation: true,
+	})
+	ckv := client.CreateTestCKVAndWait(ctx, t, &kmspb.CreateCryptoKeyVersionRequest{
+		Parent: ck.Name,
+	})
+
+	pubResp, err := client.GetPublicKey(ctx, &kmspb.GetPublicKeyRequest{
+		Name: ckv.Name,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pub := unmarshalPublicKeyPem(t, pubResp.Pem).(*rsa.PublicKey)
+	pt := []byte("the quick brown fox jumped over the lazy dog")
+
+	ct, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, pub, pt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := client.AsymmetricDecrypt(ctx, &kmspb.AsymmetricDecryptRequest{
+		Name:             ckv.Name,
+		Ciphertext:       ct,
+		CiphertextCrc32C: crc32c(ct),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := &kmspb.AsymmetricDecryptResponse{
+		Plaintext:                pt,
+		PlaintextCrc32C:          wrapperspb.Int64(int64(crc32.Checksum(pt, crc32CTable))),
+		VerifiedCiphertextCrc32C: true,
+		ProtectionLevel:          kmspb.ProtectionLevel_SOFTWARE,
+	}
+
+	if diff := cmp.Diff(want, got, ProtoDiffOpts()...); diff != "" {
+		t.Errorf("proto mismatch (-want +got): %s", diff)
+	}
+}
+
+func TestAsymmetricDecryptWihtoutChecksums(t *testing.T) {
 	ctx := context.Background()
 	kr := client.CreateTestKR(ctx, t, &kmspb.CreateKeyRingRequest{Parent: location})
 	ck := client.CreateTestCK(ctx, t, &kmspb.CreateCryptoKeyRequest{
@@ -171,7 +224,7 @@ func TestAsymmetricDecryptDisabled(t *testing.T) {
 
 	_, err := client.UpdateCryptoKeyVersion(ctx, &kmspb.UpdateCryptoKeyVersionRequest{
 		CryptoKeyVersion: ckv,
-		UpdateMask:       &fmpb.FieldMask{Paths: []string{"state"}},
+		UpdateMask:       &fieldmaskpb.FieldMask{Paths: []string{"state"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -183,5 +236,32 @@ func TestAsymmetricDecryptDisabled(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Errorf("err=%v, want code=%s", err, codes.FailedPrecondition)
+	}
+}
+
+func TestAsymmetricDecryptInvalidCiphertextChecksum(t *testing.T) {
+	ctx := context.Background()
+	kr := client.CreateTestKR(ctx, t, &kmspb.CreateKeyRingRequest{Parent: location})
+	ck := client.CreateTestCK(ctx, t, &kmspb.CreateCryptoKeyRequest{
+		Parent: kr.Name,
+		CryptoKey: &kmspb.CryptoKey{
+			Purpose: kmspb.CryptoKey_ASYMMETRIC_DECRYPT,
+			VersionTemplate: &kmspb.CryptoKeyVersionTemplate{
+				Algorithm: kmspb.CryptoKeyVersion_RSA_DECRYPT_OAEP_2048_SHA256,
+			},
+		},
+		SkipInitialVersionCreation: true,
+	})
+	ckv := client.CreateTestCKVAndWait(ctx, t, &kmspb.CreateCryptoKeyVersionRequest{
+		Parent: ck.Name,
+	})
+
+	_, err := client.AsymmetricDecrypt(ctx, &kmspb.AsymmetricDecryptRequest{
+		Name:             ckv.Name,
+		Ciphertext:       []byte("ciphertext"),
+		CiphertextCrc32C: crc32c([]byte("cosmicray")),
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Errorf("err=%v, want code=%s", err, codes.InvalidArgument)
 	}
 }

@@ -15,14 +15,14 @@
 #include "kmsp11/object.h"
 
 #include "absl/strings/str_split.h"
+#include "common/openssl.h"
+#include "common/status_macros.h"
 #include "kmsp11/kmsp11.h"
-#include "kmsp11/openssl.h"
 #include "kmsp11/util/crypto_utils.h"
 #include "kmsp11/util/errors.h"
-#include "kmsp11/util/status_macros.h"
 #include "kmsp11/util/string_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 absl::Status AddStorageAttributes(AttributeMap* attrs,
@@ -164,6 +164,44 @@ absl::Status AddRsaPrivateKeyAttributes(AttributeMap* attrs,
   return absl::OkStatus();
 }
 
+absl::Status AddSecretKeyAttributes(AttributeMap* attrs,
+                                    const kms_v1::CryptoKeyVersion& ckv) {
+  ASSIGN_OR_RETURN(AlgorithmDetails algorithm, GetDetails(ckv.algorithm()));
+
+  // CKA_VALUE and CKA_VALUE_LEN are tied to the mechanisms in the spec, but
+  // in practice they are the same for all secret keys.
+  // eg.
+  // http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228894691
+  attrs->PutSensitive(CKA_VALUE);
+  // CKA_VALUE_LEN = key size in bytes.
+  attrs->PutULong(CKA_VALUE_LEN, algorithm.key_bit_length / 8);
+
+  // Override CKA_DESTROYABLE (from 4.4 Storage Objects)
+  attrs->PutBool(CKA_DESTROYABLE, true);
+
+  // 4.10 Secret key objects
+  attrs->Put(CKA_SUBJECT, "");
+  attrs->PutBool(CKA_SENSITIVE, true);
+  attrs->PutBool(CKA_ENCRYPT,
+                 algorithm.purpose == kms_v1::CryptoKey::RAW_ENCRYPT_DECRYPT);
+  attrs->PutBool(CKA_DECRYPT,
+                 algorithm.purpose == kms_v1::CryptoKey::RAW_ENCRYPT_DECRYPT);
+  attrs->PutBool(CKA_SIGN, algorithm.purpose == kms_v1::CryptoKey::MAC);
+  attrs->PutBool(CKA_VERIFY, algorithm.purpose == kms_v1::CryptoKey::MAC);
+  attrs->PutBool(CKA_WRAP, false);
+  attrs->PutBool(CKA_UNWRAP, false);
+  attrs->PutBool(CKA_EXTRACTABLE, false);
+  attrs->PutBool(CKA_ALWAYS_SENSITIVE, ckv.import_job().empty());
+  attrs->PutBool(CKA_NEVER_EXTRACTABLE, ckv.import_job().empty());
+  // CKA_CHECK_VALUE is intentionally skipped, as permitted by the spec.
+  // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Ref320515101
+  attrs->PutBool(CKA_WRAP_WITH_TRUSTED, false);
+  attrs->PutBool(CKA_TRUSTED, false);
+  attrs->Put(CKA_WRAP_TEMPLATE, "");
+  attrs->Put(CKA_UNWRAP_TEMPLATE, "");
+  return absl::OkStatus();
+}
+
 absl::Status AddX509CertificateAttributes(AttributeMap* attrs,
                                           const kms_v1::CryptoKeyVersion& ckv,
                                           X509* cert) {
@@ -256,6 +294,18 @@ absl::StatusOr<KeyPair> Object::NewKeyPair(const kms_v1::CryptoKeyVersion& ckv,
                  Object(ckv.name(), CKO_PRIVATE_KEY, algorithm, prv_attrs)};
 }
 
+absl::StatusOr<Object> Object::NewSecretKey(
+    const kms_v1::CryptoKeyVersion& ckv) {
+  AttributeMap attrs;
+  attrs.PutULong(CKA_CLASS, CKO_SECRET_KEY);
+  RETURN_IF_ERROR(AddStorageAttributes(&attrs, ckv));
+  RETURN_IF_ERROR(AddKeyAttributes(&attrs, ckv));
+  RETURN_IF_ERROR(AddSecretKeyAttributes(&attrs, ckv));
+
+  ASSIGN_OR_RETURN(AlgorithmDetails algorithm, GetDetails(ckv.algorithm()));
+  return Object(ckv.name(), CKO_SECRET_KEY, algorithm, attrs);
+}
+
 absl::StatusOr<Object> Object::NewCertificate(
     const kms_v1::CryptoKeyVersion& ckv, X509* certificate) {
   ASSIGN_OR_RETURN(AlgorithmDetails algorithm, GetDetails(ckv.algorithm()));
@@ -268,4 +318,4 @@ absl::StatusOr<Object> Object::NewCertificate(
   return Object(ckv.name(), CKO_CERTIFICATE, algorithm, cert_attrs);
 }
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

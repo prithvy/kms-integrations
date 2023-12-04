@@ -18,12 +18,13 @@
 #define KMSP11_UTIL_HANDLE_MAP_H_
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/functional/function_ref.h"
 #include "absl/status/statusor.h"
 #include "kmsp11/cryptoki.h"
 #include "kmsp11/util/crypto_utils.h"
 #include "kmsp11/util/errors.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 
 // A HandleMap contains a set of items with assigned CK_ULONG handles.
 // It is intended for use with the PKCS #11 Session and Object types, both
@@ -80,6 +81,20 @@ class HandleMap {
     return absl::OkStatus();
   }
 
+  // Removes all map elements that match the provided predicate.
+  inline void RemoveIf(absl::FunctionRef<bool(const T&)> predicate) {
+    absl::WriterMutexLock lock(&mutex_);
+
+    auto it = items_.begin();
+    while (it != items_.end()) {
+      if (predicate(*it->second)) {
+        items_.erase(it++);
+      } else {
+        it++;
+      }
+    }
+  }
+
  private:
   CK_RV not_found_rv_;
   mutable absl::Mutex mutex_;
@@ -87,6 +102,6 @@ class HandleMap {
       ABSL_GUARDED_BY(mutex_);
 };
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11
 
 #endif  // KMSP11_UTIL_HANDLE_MAP_H_

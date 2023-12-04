@@ -14,11 +14,11 @@
 
 #include "kmsp11/object_store.h"
 
+#include "common/status_macros.h"
 #include "kmsp11/util/crypto_utils.h"
 #include "kmsp11/util/errors.h"
-#include "kmsp11/util/status_macros.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 // Cryptoki defines CK_OBJECT_HANDLE (and CK_ULONG) as simply `unsigned long`,
@@ -33,7 +33,20 @@ using ObjectStoreEntry = ObjectStoreMap::value_type;
 absl::StatusOr<std::vector<ObjectStoreEntry>> ParseStoreEntries(
     const ObjectStoreState& state) {
   std::vector<ObjectStoreEntry> entries;
-  for (const AsymmetricKey& item : state.asymmetric_keys()) {
+  for (const Key& item : state.keys()) {
+    if (item.secret_key_handle() == 0 && item.private_key_handle() == 0) {
+      return absl::InvalidArgumentError(
+          "both secret_key_handle and private_key_handle are unset, cannot "
+          "determine if key is symmetric or asymmetric");
+    }
+    if (item.secret_key_handle() != 0) {
+      ASSIGN_OR_RETURN(Object key,
+                       Object::NewSecretKey(item.crypto_key_version()));
+
+      entries.emplace_back(item.secret_key_handle(),
+                           std::make_shared<Object>(std::move(key)));
+      continue;
+    }
     ASSIGN_OR_RETURN(bssl::UniquePtr<EVP_PKEY> public_key,
                      ParseX509PublicKeyDer(item.public_key_der()));
     ASSIGN_OR_RETURN(
@@ -58,10 +71,12 @@ absl::StatusOr<std::vector<ObjectStoreEntry>> ParseStoreEntries(
       if (item.certificate().handle() == 0) {
         return absl::InvalidArgumentError("certificate_handle is unset");
       }
-      ASSIGN_OR_RETURN(bssl::UniquePtr<X509> x509,
-                       ParseX509CertificateDer(item.certificate().x509_der()));
-      ASSIGN_OR_RETURN(Object cert, Object::NewCertificate(
-                                        item.crypto_key_version(), x509.get()));
+      ASSIGN_OR_RETURN(
+          bssl::UniquePtr<X509> x509,
+          ParseX509CertificateDer(item.certificate().x509_der()));
+      ASSIGN_OR_RETURN(
+          Object cert,
+          Object::NewCertificate(item.crypto_key_version(), x509.get()));
       entries.emplace_back(item.certificate().handle(),
                            std::make_shared<Object>(std::move(cert)));
     }
@@ -169,4 +184,4 @@ absl::StatusOr<CK_OBJECT_HANDLE> ObjectStore::FindSingle(
   return *match;
 }
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

@@ -19,7 +19,7 @@
 #include "kmsp11/cryptoki.h"
 #include "kmsp11/util/errors.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 
 absl::Status InitToken(CK_SLOT_ID slotID, CK_UTF8CHAR_PTR pPin,
                        CK_ULONG ulPinLen, CK_UTF8CHAR_PTR pLabel) {
@@ -34,10 +34,6 @@ absl::Status InitPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pPin,
 absl::Status SetPIN(CK_SESSION_HANDLE hSession, CK_UTF8CHAR_PTR pOldPin,
                     CK_ULONG ulOldLen, CK_UTF8CHAR_PTR pNewPin,
                     CK_ULONG ulNewLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
-absl::Status CloseAllSessions(CK_SLOT_ID slotID) {
   return UnsupportedError(SOURCE_LOCATION);
 }
 
@@ -78,30 +74,6 @@ absl::Status SetAttributeValue(CK_SESSION_HANDLE hSession,
   return UnsupportedError(SOURCE_LOCATION);
 }
 
-absl::Status EncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
-                           CK_ULONG ulPartLen, CK_BYTE_PTR pEncryptedPart,
-                           CK_ULONG_PTR pulEncryptedPartLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
-absl::Status EncryptFinal(CK_SESSION_HANDLE hSession,
-                          CK_BYTE_PTR pLastEncryptedPart,
-                          CK_ULONG_PTR pulLastEncryptedPartLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
-absl::Status DecryptUpdate(CK_SESSION_HANDLE hSession,
-                           CK_BYTE_PTR pEncryptedPart,
-                           CK_ULONG ulEncryptedPartLen, CK_BYTE_PTR pPart,
-                           CK_ULONG_PTR pulPartLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
-absl::Status DecryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastPart,
-                          CK_ULONG_PTR pulLastPartLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
 absl::Status DigestInit(CK_SESSION_HANDLE hSession,
                         CK_MECHANISM_PTR pMechanism) {
   return UnsupportedError(SOURCE_LOCATION);
@@ -127,16 +99,6 @@ absl::Status DigestFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pDigest,
   return UnsupportedError(SOURCE_LOCATION);
 }
 
-absl::Status SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
-                        CK_ULONG ulPartLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
-absl::Status SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
-                       CK_ULONG_PTR pulSignatureLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
 absl::Status SignRecoverInit(CK_SESSION_HANDLE hSession,
                              CK_MECHANISM_PTR pMechanism,
                              CK_OBJECT_HANDLE hKey) {
@@ -146,16 +108,6 @@ absl::Status SignRecoverInit(CK_SESSION_HANDLE hSession,
 absl::Status SignRecover(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                          CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
                          CK_ULONG_PTR pulSignatureLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
-absl::Status VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
-                          CK_ULONG ulPartLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
-absl::Status VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
-                         CK_ULONG ulSignatureLen) {
   return UnsupportedError(SOURCE_LOCATION);
 }
 
@@ -197,13 +149,6 @@ absl::Status DecryptVerifyUpdate(CK_SESSION_HANDLE hSession,
   return UnsupportedError(SOURCE_LOCATION);
 }
 
-absl::Status GenerateKey(CK_SESSION_HANDLE hSession,
-                         CK_MECHANISM_PTR pMechanism,
-                         CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
-                         CK_OBJECT_HANDLE_PTR phKey) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
 absl::Status WrapKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                      CK_OBJECT_HANDLE hWrappingKey, CK_OBJECT_HANDLE hKey,
                      CK_BYTE_PTR pWrappedKey, CK_ULONG_PTR pulWrappedKeyLen) {
@@ -228,11 +173,6 @@ absl::Status SeedRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSeed,
   return UnsupportedError(SOURCE_LOCATION);
 }
 
-absl::Status GenerateRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR RandomData,
-                            CK_ULONG ulRandomLen) {
-  return UnsupportedError(SOURCE_LOCATION);
-}
-
 absl::Status GetFunctionStatus(CK_SESSION_HANDLE hSession) {
   return UnsupportedError(SOURCE_LOCATION);
 }
@@ -246,4 +186,4 @@ absl::Status WaitForSlotEvent(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot,
   return UnsupportedError(SOURCE_LOCATION);
 }
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

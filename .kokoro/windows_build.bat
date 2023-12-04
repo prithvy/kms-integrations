@@ -23,32 +23,53 @@ cd "%PROJECT_ROOT%"
 set RESULTS_DIR=%KOKORO_ARTIFACTS_DIR%\results
 mkdir "%RESULTS_DIR%"
 
-choco install -y bazel --version 4.2.1
+:: Get Bazelisk
+set GOPATH=%KOKORO_ARTIFACTS_DIR%\gopath
+go install github.com/bazelbuild/bazelisk@latest
+set PATH=%GOPATH%\bin;%PATH%
 
-:: Configure user.bazelrc with remote build caching options
+:: Unwrap our wrapped service account key
+set GOOGLE_APPLICATION_CREDENTIALS=%KOKORO_ARTIFACTS_DIR%/oss-tools-ci-key.json
+go run ./.kokoro/unwrap_key.go ^
+  -wrapping_key_file=%KOKORO_KEYSTORE_DIR%/75220_token-wrapping-key ^
+  -wrapped_key_file=%KOKORO_GFILE_DIR%/oss-tools-ci-key.json.enc ^
+  > %GOOGLE_APPLICATION_CREDENTIALS%
+
+:: Install Microsoft's CNG SDK, stored in GCS for convenience.
+:: Install all features, without displaying the GUI.
+%KOKORO_GFILE_DIR%\cpdksetup.exe /features + /quiet
+
+:: Configure user.bazelrc with remote build caching options and Google creds
 copy .kokoro\remote_cache.bazelrc user.bazelrc
-echo build --remote_default_exec_properties=cache-silo-key=windows >> user.bazelrc
+echo build --remote_default_exec_properties=cache-silo-key=%KOKORO_JOB_NAME% ^
+  >> user.bazelrc
+echo test --test_env=GOOGLE_APPLICATION_CREDENTIALS >> user.bazelrc
 
 :: https://docs.bazel.build/versions/master/windows.html#build-c-with-msvc
-set BAZEL_VC=C:\Program Files (x86)\Microsoft Visual Studio\2019\BuildTools\VC\
+set BAZEL_VC=C:\VS\VC\
 
 :: Force msys2 environment instead of Cygwin
-set PATH=C:\tools\msys64\usr\bin;%PATH%
-set BAZEL_SH=C:\tools\msys64\usr\bin\bash.exe
-
-:: Use our scratch drive for temp space
-mkdir T:\buildtmp
-set TMP=T:\buildtmp
+set PATH=C:\msys64\usr\bin;%PATH%
+set BAZEL_SH=C:\msys64\usr\bin\bash.exe
+set BAZEL_ARGS=-c opt --keep_going --enable_runfiles %BAZEL_EXTRA_ARGS%
+:: https://bazel.build/configure/windows#long-path-issues
+set BAZEL_STARTUP_ARGS=--output_user_root c:\bzltmp
 
 :: Ensure Bazel version information is included in the build log
-bazel version
+bazelisk %BAZEL_STARTUP_ARGS% version
 
-set BAZEL_ARGS=-c opt --keep_going %BAZEL_EXTRA_ARGS%
-
-bazel test %BAZEL_ARGS% ... :release_tests
+bazelisk %BAZEL_STARTUP_ARGS% test %BAZEL_ARGS% ^
+    ... :ci_only_tests :windows_ci_only_tests
 set RV=%ERRORLEVEL%
 
-bazel run %BAZEL_ARGS% //kmsp11/tools/buildsigner -- ^
+:: Run e2e test last and make sure the DLL is in system32.
+if exist "%PROJECT_ROOT%\bazel-bin\kmscng\main\kmscng.dll" copy ^
+    "%PROJECT_ROOT%\bazel-bin\kmscng\main\kmscng.dll" ^
+    "C:\Windows\system32\kmscng.dll"
+bazelisk %BAZEL_STARTUP_ARGS% test %BAZEL_ARGS% //kmscng/test/e2e:e2e_test
+set RV_E2E=%ERRORLEVEL%
+
+bazelisk %BAZEL_STARTUP_ARGS% run %BAZEL_ARGS% //kmsp11/tools/buildsigner -- ^
   -signing_key=%BUILD_SIGNING_KEY% ^
   < "%PROJECT_ROOT%\bazel-bin\kmsp11\main\libkmsp11.so" ^
   > "%RESULTS_DIR%\kmsp11.dll.sig"
@@ -57,11 +78,25 @@ set SIGN_RV=%ERRORLEVEL%
 if exist "%PROJECT_ROOT%\bazel-bin\kmsp11\main\libkmsp11.so" copy ^
     "%PROJECT_ROOT%\bazel-bin\kmsp11\main\libkmsp11.so" ^
     "%RESULTS_DIR%\kmsp11.dll"
+if exist "%PROJECT_ROOT%\bazel-bin\kmsp11\test\e2e\e2e_test.exe" copy ^
+    "%PROJECT_ROOT%\bazel-bin\kmsp11\test\e2e\e2e_test.exe" ^
+    "%RESULTS_DIR%\kmsp11_e2e_test.exe"
+
+if exist "%PROJECT_ROOT%\bazel-bin\kmscng\main\kmscng.dll" copy ^
+    "%PROJECT_ROOT%\bazel-bin\kmscng\main\kmscng.dll" ^
+    "%RESULTS_DIR%\kmscng.dll"
+if exist "%PROJECT_ROOT%\bazel-bin\kmscng\main\kmscng.msi" copy ^
+    "%PROJECT_ROOT%\bazel-bin\kmscng\main\kmscng.msi" ^
+    "%RESULTS_DIR%\kmscng.msi"
+if exist "%PROJECT_ROOT%\bazel-bin\kmscng\test\e2e\e2e_test.exe" copy ^
+    "%PROJECT_ROOT%\bazel-bin\kmscng\test\e2e\e2e_test.exe" ^
+    "%RESULTS_DIR%\kmscng_e2e_test.exe"
 
 copy "%PROJECT_ROOT%\LICENSE" "%RESULTS_DIR%\LICENSE"
-copy "%PROJECT_ROOT%\NOTICE" "%RESULTS_DIR%\LICENSE"
 
 python "%PROJECT_ROOT%\.kokoro\copy_test_outputs.py" ^
     "%PROJECT_ROOT%\bazel-testlogs" "%RESULTS_DIR%\testlogs"
 
-if not %RV% == 0 exit %RV% else exit %SIGN_RV%
+if %RV% NEQ 0 exit %RV% ^
+    else if %RV_E2E% NEQ 0 exit %RV_E2E% ^
+    else exit %SIGN_RV%

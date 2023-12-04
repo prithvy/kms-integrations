@@ -1,5 +1,10 @@
 load("@bazel_skylib//lib:selects.bzl", "selects")
 
+package_group(
+    name = "internal",
+    packages = ["//..."],
+)
+
 config_setting(
     name = "freebsd",
     constraint_values = ["@platforms//os:freebsd"],
@@ -40,9 +45,27 @@ config_setting(
 )
 
 # A target to encompass tests that are tagged 'manual'
-# but should be run for release builds.
+# but should be run in CI environments.
 test_suite(
-    name = "release_tests",
+    name = "ci_only_tests",
     tags = ["manual"],
-    tests = ["//kmsp11/main:binary_test"],
+    tests = [
+        "//kmsp11/main:binary_test",
+        "//kmsp11/test/e2e:e2e_test",
+    ],
+)
+
+# A target to encompass tests that are tagged 'manual'
+# but should be run in Windows CI environments.
+#
+# We should be able to merge this with :ci_only tests in Bazel 7
+# using the new flag --skip_incompatible_explicit_targets.
+# https://github.com/bazelbuild/bazel/issues/17403
+test_suite(
+    name = "windows_ci_only_tests",
+    tags = ["manual"],
+    tests = [
+        "//kmscng/main:install_test",
+        "//kmscng/test:signtool_test",
+    ],
 )

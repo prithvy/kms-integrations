@@ -18,14 +18,14 @@
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
+#include "common/kms_client.h"
+#include "common/status_macros.h"
 #include "kmsp11/object_loader.h"
 #include "kmsp11/object_store_state.pb.h"
 #include "kmsp11/util/errors.h"
-#include "kmsp11/util/kms_client.h"
-#include "kmsp11/util/status_macros.h"
 #include "kmsp11/util/string_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 absl::StatusOr<CK_SLOT_INFO> NewSlotInfo() {
@@ -49,8 +49,8 @@ absl::StatusOr<CK_TOKEN_INFO> NewTokenInfo(std::string_view token_label) {
       {0},  // manufacturerID (set with ' ' padding below)
       {0},  // model (set with ' ' padding below)
       {0},  // serialNumber (set below)
-      CKF_USER_PIN_INITIALIZED | CKF_TOKEN_INITIALIZED |
-          CKF_SO_PIN_LOCKED,       // flags
+      CKF_USER_PIN_INITIALIZED | CKF_TOKEN_INITIALIZED | CKF_SO_PIN_LOCKED |
+          CKF_RNG,                 // flags
       CK_EFFECTIVELY_INFINITE,     // ulMaxSessionCount
       CK_UNAVAILABLE_INFORMATION,  // ulSessionCount
       CK_EFFECTIVELY_INFINITE,     // ulMaxRwSessionCount
@@ -83,8 +83,10 @@ absl::StatusOr<std::unique_ptr<Token>> Token::New(CK_SLOT_ID slot_id,
   ASSIGN_OR_RETURN(CK_TOKEN_INFO token_info,
                    NewTokenInfo(token_config.label()));
 
-  ASSIGN_OR_RETURN(std::unique_ptr<ObjectLoader> loader,
-                   ObjectLoader::New(token_config.key_ring(), generate_certs));
+  ASSIGN_OR_RETURN(
+      std::unique_ptr<ObjectLoader> loader,
+      ObjectLoader::New(token_config.key_ring(),
+                        token_config.certs(), generate_certs));
   ASSIGN_OR_RETURN(ObjectStoreState state, loader->BuildState(*kms_client));
   ASSIGN_OR_RETURN(std::unique_ptr<ObjectStore> store, ObjectStore::New(state));
 
@@ -146,4 +148,4 @@ absl::Status Token::RefreshState(const KmsClient& client) {
   return absl::OkStatus();
 }
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

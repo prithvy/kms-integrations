@@ -20,7 +20,7 @@ import (
 	"crypto/rsa"
 	"fmt"
 
-	kmspb "google.golang.org/genproto/googleapis/cloud/kms/v1"
+	"cloud.google.com/go/kms/apiv1/kmspb"
 )
 
 // algDef contains details about a KMS algorithm
@@ -44,6 +44,32 @@ var algorithms = map[kmspb.CryptoKeyVersion_CryptoKeyVersionAlgorithm]algDef{
 	// ENCRYPT_DECRYPT
 	kmspb.CryptoKeyVersion_GOOGLE_SYMMETRIC_ENCRYPTION: {
 		Purpose:    kmspb.CryptoKey_ENCRYPT_DECRYPT,
+		KeyFactory: symmetricKeyFactory(256),
+	},
+
+	// RAW_ENCRYPT_DECRYPT
+	kmspb.CryptoKeyVersion_AES_128_GCM: {
+		Purpose:    kmspb.CryptoKey_RAW_ENCRYPT_DECRYPT,
+		KeyFactory: symmetricKeyFactory(128),
+	},
+	kmspb.CryptoKeyVersion_AES_256_GCM: {
+		Purpose:    kmspb.CryptoKey_RAW_ENCRYPT_DECRYPT,
+		KeyFactory: symmetricKeyFactory(256),
+	},
+	kmspb.CryptoKeyVersion_AES_128_CTR: {
+		Purpose:    kmspb.CryptoKey_RAW_ENCRYPT_DECRYPT,
+		KeyFactory: symmetricKeyFactory(128),
+	},
+	kmspb.CryptoKeyVersion_AES_256_CTR: {
+		Purpose:    kmspb.CryptoKey_RAW_ENCRYPT_DECRYPT,
+		KeyFactory: symmetricKeyFactory(256),
+	},
+	kmspb.CryptoKeyVersion_AES_128_CBC: {
+		Purpose:    kmspb.CryptoKey_RAW_ENCRYPT_DECRYPT,
+		KeyFactory: symmetricKeyFactory(128),
+	},
+	kmspb.CryptoKeyVersion_AES_256_CBC: {
+		Purpose:    kmspb.CryptoKey_RAW_ENCRYPT_DECRYPT,
 		KeyFactory: symmetricKeyFactory(256),
 	},
 
@@ -154,6 +180,34 @@ var algorithms = map[kmspb.CryptoKeyVersion_CryptoKeyVersionAlgorithm]algDef{
 		Purpose:    kmspb.CryptoKey_ASYMMETRIC_SIGN,
 		KeyFactory: rsaKeyFactory(4096),
 		Opts:       crypto.Hash(0),
+	},
+
+	// MAC
+
+	kmspb.CryptoKeyVersion_HMAC_SHA1: {
+		Purpose:    kmspb.CryptoKey_MAC,
+		KeyFactory: symmetricKeyFactory(160),
+		Opts:       crypto.SHA1,
+	},
+	kmspb.CryptoKeyVersion_HMAC_SHA224: {
+		Purpose:    kmspb.CryptoKey_MAC,
+		KeyFactory: symmetricKeyFactory(224),
+		Opts:       crypto.SHA224,
+	},
+	kmspb.CryptoKeyVersion_HMAC_SHA256: {
+		Purpose:    kmspb.CryptoKey_MAC,
+		KeyFactory: symmetricKeyFactory(256),
+		Opts:       crypto.SHA256,
+	},
+	kmspb.CryptoKeyVersion_HMAC_SHA384: {
+		Purpose:    kmspb.CryptoKey_MAC,
+		KeyFactory: symmetricKeyFactory(384),
+		Opts:       crypto.SHA384,
+	},
+	kmspb.CryptoKeyVersion_HMAC_SHA512: {
+		Purpose:    kmspb.CryptoKey_MAC,
+		KeyFactory: symmetricKeyFactory(512),
+		Opts:       crypto.SHA512,
 	},
 }
 

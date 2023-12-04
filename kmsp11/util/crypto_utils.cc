@@ -19,11 +19,11 @@
 #include "absl/random/random.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
+#include "common/status_macros.h"
 #include "glog/logging.h"
 #include "kmsp11/util/errors.h"
-#include "kmsp11/util/status_macros.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 static const ASN1_TIME kUnixEpoch = [] {
@@ -185,10 +185,16 @@ absl::Status CheckFipsSelfTest() {
 absl::StatusOr<const EVP_MD*> DigestForMechanism(CK_MECHANISM_TYPE mechanism) {
   switch (mechanism) {
     case CKM_SHA256:
+    case CKM_ECDSA_SHA256:
+    case CKM_SHA256_RSA_PKCS:
+    case CKM_SHA256_RSA_PKCS_PSS:
       return EVP_sha256();
     case CKM_SHA384:
+    case CKM_ECDSA_SHA384:
       return EVP_sha384();
     case CKM_SHA512:
+    case CKM_SHA512_RSA_PKCS:
+    case CKM_SHA512_RSA_PKCS_PSS:
       return EVP_sha512();
     default:
       return NewInternalError(
@@ -421,6 +427,26 @@ absl::StatusOr<bssl::UniquePtr<X509>> ParseX509CertificateDer(
   return ParseDer(certificate_der, &d2i_X509);
 }
 
+absl::StatusOr<bssl::UniquePtr<X509>> ParseX509CertificatePem(
+    std::string_view certificate_pem) {
+  bssl::UniquePtr<BIO> bio(
+      BIO_new_mem_buf(certificate_pem.data(), certificate_pem.size()));
+  if (!bio) {
+    return NewInternalError(
+        absl::StrCat("error allocating bio: ", SslErrorToString()),
+        SOURCE_LOCATION);
+  }
+
+  bssl::UniquePtr<X509> result(
+      PEM_read_bio_X509(bio.get(), nullptr, nullptr, nullptr));
+  if (!result) {
+    return NewInvalidArgumentError(
+        absl::StrCat("error parsing certificate: ", SslErrorToString()),
+        CKR_DEVICE_ERROR, SOURCE_LOCATION);
+  }
+  return std::move(result);
+}
+
 absl::StatusOr<bssl::UniquePtr<EVP_PKEY>> ParseX509PublicKeyDer(
     std::string_view public_key_der) {
   return ParseDer(public_key_der, &d2i_PUBKEY);
@@ -579,10 +605,42 @@ absl::Status RsaVerifyRawPkcs1(RSA* public_key, absl::Span<const uint8_t> data,
   return absl::OkStatus();
 }
 
-void SafeZeroMemory(volatile char* ptr, size_t size) {
-  while (size--) {
-    *ptr++ = 0;
+bool IsRawRsaAlgorithm(
+    kms_v1::CryptoKeyVersion::CryptoKeyVersionAlgorithm algorithm) {
+  if (algorithm == kms_v1::CryptoKeyVersion::RSA_SIGN_RAW_PKCS1_2048 ||
+      algorithm == kms_v1::CryptoKeyVersion::RSA_SIGN_RAW_PKCS1_3072 ||
+      algorithm == kms_v1::CryptoKeyVersion::RSA_SIGN_RAW_PKCS1_4096) {
+    return true;
   }
+  return false;
+}
+
+// Build a DigestInfo structure, which is the expected input into a CKM_RSA_PKCS
+// signing operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc441850410
+absl::StatusOr<std::vector<uint8_t>> BuildRsaDigestInfo(
+    int digest_nid, absl::Span<const uint8_t> digest) {
+  X509_ALGOR* algorithm;
+  ASN1_OCTET_STRING* dig;
+  bssl::UniquePtr<X509_SIG> digest_info(X509_SIG_new());
+  X509_SIG_getm(digest_info.get(), &algorithm, &dig);
+
+  if (X509_ALGOR_set0(algorithm, OBJ_nid2obj(digest_nid), V_ASN1_NULL,
+                      nullptr) != 1) {
+    return absl::InternalError(absl::StrCat(
+        "failure setting algorithm parameters: ", SslErrorToString()));
+  }
+  if (ASN1_OCTET_STRING_set(dig, digest.data(), digest.size()) != 1) {
+    return absl::InternalError(
+        absl::StrCat("failure setting digest value: ", SslErrorToString()));
+  }
+
+  ASSIGN_OR_RETURN(std::string digest_info_der,
+                   MarshalX509Sig(digest_info.get()));
+  return std::vector<uint8_t>(
+      reinterpret_cast<const uint8_t*>(digest_info_der.data()),
+      reinterpret_cast<const uint8_t*>(digest_info_der.data() +
+                                       digest_info_der.size()));
 }
 
 std::string SslErrorToString(std::string_view default_message) {
@@ -597,4 +655,4 @@ std::string SslErrorToString(std::string_view default_message) {
   return std::string(contents, size_t(len));
 }
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

@@ -14,16 +14,16 @@
 
 #include "kmsp11/object.h"
 
+#include "common/status_macros.h"
+#include "common/test/runfiles.h"
+#include "common/test/test_status_macros.h"
 #include "gmock/gmock.h"
 #include "kmsp11/cert_authority.h"
 #include "kmsp11/kmsp11.h"
 #include "kmsp11/test/matchers.h"
-#include "kmsp11/test/runfiles.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "kmsp11/util/crypto_utils.h"
-#include "kmsp11/util/status_macros.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::Each;
@@ -270,4 +270,4 @@ TEST(NewCertificateTest, CertificateAttributes) {
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

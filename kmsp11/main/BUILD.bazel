@@ -19,14 +19,15 @@ cc_library(
     ],
     linkstatic = 1,
     deps = [
+        ":fork_support",
         "//kmsp11:cryptoki_headers",
-        "//kmsp11:mechanism",
         "//kmsp11:provider",
         "//kmsp11/config",
         "//kmsp11/util:crypto_utils",
         "//kmsp11/util:errors",
         "//kmsp11/util:global_provider",
         "//kmsp11/util:logging",
+        "//kmsp11/util:status_utils",
         "@com_google_absl//absl/status",
     ],
     alwayslink = 1,
@@ -38,10 +39,55 @@ cc_test(
     srcs = ["bridge_test.cc"],
     deps = [
         ":bridge",
+        "//common/test:test_platform",
         "//fakekms/cpp:fakekms",
         "//kmsp11/test",
         "//kmsp11/util:crypto_utils",
-        "//kmsp11/util:platform",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "asymmetric_crypt_test",
+    size = "small",
+    srcs = ["asymmetric_crypt_test.cc"],
+    deps = [
+        ":bridge",
+        "//common/test:test_platform",
+        "//fakekms/cpp:fakekms",
+        "//kmsp11/test",
+        "//kmsp11/util:crypto_utils",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "asymmetric_sign_test",
+    size = "small",
+    srcs = ["asymmetric_sign_test.cc"],
+    deps = [
+        ":bridge",
+        "//common/test:test_platform",
+        "//fakekms/cpp:fakekms",
+        "//kmsp11/test",
+        "//kmsp11/util:crypto_utils",
+        "@com_google_absl//absl/cleanup",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
+    name = "symmetric_crypt_test",
+    size = "small",
+    srcs = ["symmetric_crypt_test.cc"],
+    deps = [
+        ":bridge",
+        "//common/test:test_platform",
+        "//fakekms/cpp:fakekms",
+        "//kmsp11/test",
+        "//kmsp11/util:crypto_utils",
         "@com_google_absl//absl/cleanup",
         "@com_google_googletest//:gtest_main",
     ],
@@ -53,9 +99,9 @@ cc_test(
     srcs = ["bridge_logging_test.cc"],
     deps = [
         ":bridge",
+        "//common:platform",
         "//fakekms/cpp:fakekms",
         "//kmsp11/test",
-        "//kmsp11/util:platform",
         "//kmsp11/util:string_utils",
         "@com_google_absl//absl/cleanup",
         "@com_google_googletest//:gtest_main",
@@ -71,10 +117,29 @@ cc_test(
     }),
     deps = [
         ":bridge",
+        "//common/test:test_status_macros",
         "//fakekms/cpp:fakekms",
-        "//kmsp11/test",
         "@com_google_absl//absl/cleanup",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "fork_support",
+    srcs = select({
+        "//:windows": ["fork_support_win.cc"],
+        "//conditions:default": ["fork_support_posix.cc"],
+    }),
+    hdrs = ["fork_support.h"],
+    copts = select({
+        "//:linux": ["-lpthread"],
+        "//conditions:default": [],
+    }),
+    deps = [
+        "//kmsp11/util:global_provider",
+        "//kmsp11/util:logging",
+        "@com_github_grpc_grpc//:grpc++",
+        "@com_google_absl//absl/status",
     ],
 )
 
@@ -91,9 +156,9 @@ cc_test(
     ],
     deps = [
         ":bridge",
+        "//common/test:test_platform",
         "//fakekms/cpp:fakekms",
         "//kmsp11/test",
-        "//kmsp11/util:platform",
         "@com_google_absl//absl/cleanup",
         "@com_google_googletest//:gtest_main",
     ],
@@ -125,7 +190,7 @@ cc_binary(
             "-Wl,--version-script,$(location :linux_exports.lds)",
             # Disallow undefined symbols in object files.
             "-z defs",
-            # Link statically with libstdc++ and libgcc
+            # Link statically with the C++ stdlib (usually LLVM/libc++ despite these names).
             "-static-libstdc++",
             "-static-libgcc",
         ],
@@ -172,7 +237,7 @@ go_test(
         # - It will fail on devs' workstations if devs have a modern glibc.
         # - It will fail in asan/tsan builds.
         # This test should always be run when building releases, and is included
-        # in the `//:release_tests` target.
+        # in the `//:ci_only_tests` target so that it runs in CI builds.
         "manual",
     ],
     deps = [

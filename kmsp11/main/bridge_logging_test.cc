@@ -16,17 +16,17 @@
 #include <fstream>
 
 #include "absl/cleanup/cleanup.h"
+#include "common/platform.h"
+#include "common/test/test_status_macros.h"
 #include "fakekms/cpp/fakekms.h"
 #include "gmock/gmock.h"
 #include "kmsp11/kmsp11.h"
 #include "kmsp11/main/bridge.h"
 #include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/test_status_macros.h"
-#include "kmsp11/util/platform.h"
 #include "kmsp11/util/string_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::HasSubstr;
@@ -135,7 +135,7 @@ TEST_F(BridgeLoggingTest, GrpcErrorEventEmittedWithDefaultVerbosity) {
   // Default verbosity is ERROR.
   EXPECT_EQ(gpr_should_log(GPR_LOG_SEVERITY_ERROR), 1);
   std::string message = "This error message should appear in the logs.";
-  gpr_log("foo.cc", 42, GPR_LOG_SEVERITY_ERROR, message.c_str());
+  gpr_log("foo.cc", 42, GPR_LOG_SEVERITY_ERROR, "%s", message.c_str());
   ASSERT_OK(Finalize(nullptr));
 
   std::filesystem::recursive_directory_iterator log_iter(log_directory);
@@ -157,7 +157,7 @@ TEST_F(BridgeLoggingTest, GrpcDebugEventNotEmittedWithDefaultVerbosity) {
   // Default verbosity is ERROR.
   EXPECT_EQ(gpr_should_log(GPR_LOG_SEVERITY_DEBUG), 0);
   std::string message = "This message shouldn't appear in the logs.";
-  gpr_log("foo.cc", 42, GPR_LOG_SEVERITY_DEBUG, message.c_str());
+  gpr_log("foo.cc", 42, GPR_LOG_SEVERITY_DEBUG, "%s", message.c_str());
   ASSERT_OK(Finalize(nullptr));
 
   std::filesystem::recursive_directory_iterator log_iter(log_directory);
@@ -185,7 +185,7 @@ TEST_F(BridgeLoggingTest, GrpcDebugEventEmittedWhenVerbosityIsDebug) {
   ASSERT_OK(Initialize(&init_args_));
   EXPECT_EQ(gpr_should_log(GPR_LOG_SEVERITY_DEBUG), 1);
   std::string message = "This message should appear in the logs.";
-  gpr_log("foo.cc", 42, GPR_LOG_SEVERITY_DEBUG, message.c_str());
+  gpr_log("foo.cc", 42, GPR_LOG_SEVERITY_DEBUG, "%s", message.c_str());
   ASSERT_OK(Finalize(nullptr));
 
   std::filesystem::recursive_directory_iterator log_iter(log_directory);
@@ -227,4 +227,4 @@ TEST_F(BridgeLoggingTest, ExistingSslErrorIsClearedAndLogged) {
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

@@ -17,79 +17,69 @@
 #include <fstream>
 
 #include "absl/cleanup/cleanup.h"
+#include "common/openssl.h"
+#include "common/test/test_platform.h"
+#include "common/test/test_status_macros.h"
 #include "fakekms/cpp/fakekms.h"
 #include "gmock/gmock.h"
 #include "kmsp11/config/config.h"
 #include "kmsp11/kmsp11.h"
-#include "kmsp11/openssl.h"
+#include "kmsp11/test/common_setup.h"
 #include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "kmsp11/util/crypto_utils.h"
-#include "kmsp11/util/platform.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::AllOf;
 using ::testing::AnyOf;
 using ::testing::ElementsAre;
+using ::testing::ElementsAreArray;
 using ::testing::Ge;
 using ::testing::HasSubstr;
 using ::testing::IsEmpty;
 using ::testing::IsSupersetOf;
+using ::testing::Not;
 
-class BridgeTest : public testing::Test {
- protected:
-  void SetUp() override {
-    ASSERT_OK_AND_ASSIGN(fake_server_, fakekms::Server::New());
-
-    auto client = fake_server_->NewClient();
-    kr1_ = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr1_);
-    kr2_ = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr2_);
-
-    config_file_ = std::tmpnam(nullptr);
-    std::ofstream(config_file_) << absl::StrFormat(R"(
-tokens:
-  - key_ring: "%s"
-    label: "foo"
-  - key_ring: "%s"
-    label: "bar"
-kms_endpoint: "%s"
-use_insecure_grpc_channel_credentials: true
-)",
-                                                   kr1_.name(), kr2_.name(),
-                                                   fake_server_->listen_addr());
-
-    init_args_ = {0};
-    init_args_.flags = CKF_OS_LOCKING_OK;
-    init_args_.pReserved = const_cast<char*>(config_file_.c_str());
-  }
-
-  void TearDown() override { std::remove(config_file_.c_str()); }
-
-  std::unique_ptr<fakekms::Server> fake_server_;
-  kms_v1::KeyRing kr1_;
-  kms_v1::KeyRing kr2_;
-  std::string config_file_;
-  CK_C_INITIALIZE_ARGS init_args_;
-};
-
-TEST_F(BridgeTest, InitializeFromArgs) {
-  EXPECT_OK(Initialize(&init_args_));
+TEST(BridgeTest, InitializeFromArgs) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+  auto init_args = InitArgs(config_file.c_str());
+  EXPECT_OK(Initialize(&init_args));
   EXPECT_OK(Finalize(nullptr));
 }
 
-TEST_F(BridgeTest, InitializeFailsOnSecondCall) {
-  EXPECT_OK(Initialize(&init_args_));
+TEST(BridgeTest, InitializeFailsOnSecondCall) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
+
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
 
-  EXPECT_THAT(Initialize(&init_args_),
+  EXPECT_THAT(Initialize(&init_args),
               StatusRvIs(CKR_CRYPTOKI_ALREADY_INITIALIZED));
 }
 
-TEST_F(BridgeTest, InitializeFromEnvironment) {
-  SetEnvVariable(kConfigEnvVariable, config_file_);
+TEST(BridgeTest, InitializeFromEnvironment) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  SetEnvVariable(kConfigEnvVariable, config_file);
   absl::Cleanup c = [] { ClearEnvVariable(kConfigEnvVariable); };
 
   EXPECT_OK(Initialize(nullptr));
@@ -97,8 +87,15 @@ TEST_F(BridgeTest, InitializeFromEnvironment) {
   EXPECT_OK(Finalize(nullptr));
 }
 
-TEST_F(BridgeTest, InitArgsWithoutReservedLoadsFromEnv) {
-  SetEnvVariable(kConfigEnvVariable, config_file_);
+TEST(BridgeTest, InitArgsWithoutReservedLoadsFromEnv) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  SetEnvVariable(kConfigEnvVariable, config_file);
   absl::Cleanup c = [] { ClearEnvVariable(kConfigEnvVariable); };
 
   CK_C_INITIALIZE_ARGS init_args = {0};
@@ -108,25 +105,45 @@ TEST_F(BridgeTest, InitArgsWithoutReservedLoadsFromEnv) {
   EXPECT_OK(Finalize(nullptr));
 }
 
-TEST_F(BridgeTest, InitializeFailsWithoutConfig) {
+TEST(BridgeTest, InitializeFailsWithoutConfig) {
   EXPECT_THAT(Initialize(nullptr),
               StatusIs(absl::StatusCode::kFailedPrecondition));
 }
 
-TEST_F(BridgeTest, InitializeFailsWithArgsNoOsLocking) {
+TEST(BridgeTest, InitializeSucceedsWithEmptyArgs) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  SetEnvVariable(kConfigEnvVariable, config_file);
+  absl::Cleanup c = [] { ClearEnvVariable(kConfigEnvVariable); };
   CK_C_INITIALIZE_ARGS init_args = {0};
+
+  EXPECT_OK(Initialize(&init_args));
+  // Finalize so that other tests see an uninitialized state
+  EXPECT_OK(Finalize(nullptr));
+}
+
+TEST(BridgeTest, InitializeFailsWithArgsNoOsLocking) {
+  CK_C_INITIALIZE_ARGS init_args = {0};
+  int temp = 7337;
+  init_args.flags = 0;
+  init_args.LockMutex = (CK_LOCKMUTEX)&temp;
 
   EXPECT_THAT(Initialize(&init_args), StatusRvIs(CKR_CANT_LOCK));
 }
 
-TEST_F(BridgeTest, InitializeFailsWithArgsNoThreads) {
+TEST(BridgeTest, InitializeFailsWithArgsNoThreads) {
   CK_C_INITIALIZE_ARGS init_args = {0};
   init_args.flags = CKF_OS_LOCKING_OK | CKF_LIBRARY_CANT_CREATE_OS_THREADS;
 
   EXPECT_THAT(Initialize(&init_args), StatusRvIs(CKR_NEED_TO_CREATE_THREADS));
 }
 
-TEST_F(BridgeTest, InitializeFailsWithArgsNoConfig) {
+TEST(BridgeTest, InitializeFailsWithArgsNoConfig) {
   CK_C_INITIALIZE_ARGS init_args = {0};
   init_args.flags = CKF_OS_LOCKING_OK;
 
@@ -135,54 +152,99 @@ TEST_F(BridgeTest, InitializeFailsWithArgsNoConfig) {
                        HasSubstr("cannot load configuration")));
 }
 
-TEST_F(BridgeTest, FinalizeFailsWithoutInitialize) {
+TEST(BridgeTest, FinalizeFailsWithoutInitialize) {
   EXPECT_THAT(Finalize(nullptr), StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetInfoSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
+TEST(BridgeTest, GetInfoSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
   CK_INFO info;
   EXPECT_OK(GetInfo(&info));
-  EXPECT_OK(Finalize(nullptr));
 }
 
-TEST_F(BridgeTest, GetInfoFailsWithoutInitialize) {
+TEST(BridgeTest, GetInfoFailsWithoutInitialize) {
   EXPECT_THAT(GetInfo(nullptr), StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetInfoFailsNullPtr) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetInfoFailsNullPtr) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(GetInfo(nullptr), StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, GetFunctionListSuccess) {
+TEST(BridgeTest, GetFunctionListSuccess) {
   CK_FUNCTION_LIST* function_list;
   EXPECT_OK(GetFunctionList(&function_list));
 }
 
-TEST_F(BridgeTest, FunctionListValidPointers) {
+TEST(BridgeTest, FunctionListValidPointers) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
   CK_FUNCTION_LIST* f;
   EXPECT_OK(GetFunctionList(&f));
 
-  EXPECT_EQ(f->C_Initialize(&init_args_), CKR_OK);
+  EXPECT_EQ(f->C_Initialize(&init_args), CKR_OK);
   CK_INFO info;
   EXPECT_EQ(f->C_GetInfo(&info), CKR_OK);
   EXPECT_EQ(f->C_Finalize(nullptr), CKR_OK);
 }
 
-TEST_F(BridgeTest, GetFunctionListFailsNullPtr) {
+TEST(BridgeTest, GetFunctionListFailsNullPtr) {
   EXPECT_THAT(GetFunctionList(nullptr), StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, GetSlotListFailsNotInitialized) {
+TEST(BridgeTest, GetSlotListFailsNotInitialized) {
   EXPECT_THAT(GetSlotList(false, nullptr, nullptr),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetSlotListReturnsSlots) {
-  EXPECT_OK(Initialize(&init_args_));
+TEST(BridgeTest, GetSlotListReturnsSlots) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  // Initialize two keyrings and create a configuration file.
+  auto client = fake_server->NewClient();
+  kms_v1::KeyRing kr1, kr2;
+  kr1 = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr1);
+  kr2 = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr2);
+
+  std::string config_file = std::tmpnam(nullptr);
+  std::ofstream(config_file)
+      << absl::StrFormat(R"(
+tokens:
+  - key_ring: "%s"
+    label: "foo"
+  - key_ring: "%s"
+    label: "bar"
+kms_endpoint: "%s"
+use_insecure_grpc_channel_credentials: true
+)",
+                         kr1.name(), kr2.name(), fake_server->listen_addr());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
 
   std::vector<CK_SLOT_ID> slots(2);
@@ -192,8 +254,33 @@ TEST_F(BridgeTest, GetSlotListReturnsSlots) {
   EXPECT_THAT(slots, ElementsAre(0, 1));
 }
 
-TEST_F(BridgeTest, GetSlotListReturnsSize) {
-  EXPECT_OK(Initialize(&init_args_));
+TEST(BridgeTest, GetSlotListReturnsSize) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  // Initialize two keyrings and create a configuration file.
+  auto client = fake_server->NewClient();
+  kms_v1::KeyRing kr1, kr2;
+  kr1 = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr1);
+  kr2 = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr2);
+
+  std::string config_file = std::tmpnam(nullptr);
+  std::ofstream(config_file)
+      << absl::StrFormat(R"(
+tokens:
+  - key_ring: "%s"
+    label: "foo"
+  - key_ring: "%s"
+    label: "bar"
+kms_endpoint: "%s"
+use_insecure_grpc_channel_credentials: true
+)",
+                         kr1.name(), kr2.name(), fake_server->listen_addr());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
 
   CK_ULONG slots_size;
@@ -201,8 +288,33 @@ TEST_F(BridgeTest, GetSlotListReturnsSize) {
   EXPECT_EQ(slots_size, 2);
 }
 
-TEST_F(BridgeTest, GetSlotListFailsBufferTooSmall) {
-  EXPECT_OK(Initialize(&init_args_));
+TEST(BridgeTest, GetSlotListFailsBufferTooSmall) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  // Initialize two keyrings and create a configuration file.
+  auto client = fake_server->NewClient();
+  kms_v1::KeyRing kr1, kr2;
+  kr1 = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr1);
+  kr2 = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr2);
+
+  std::string config_file = std::tmpnam(nullptr);
+  std::ofstream(config_file)
+      << absl::StrFormat(R"(
+tokens:
+  - key_ring: "%s"
+    label: "foo"
+  - key_ring: "%s"
+    label: "bar"
+kms_endpoint: "%s"
+use_insecure_grpc_channel_credentials: true
+)",
+                         kr1.name(), kr2.name(), fake_server->listen_addr());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
 
   std::vector<CK_SLOT_ID> slots(1);
@@ -212,9 +324,15 @@ TEST_F(BridgeTest, GetSlotListFailsBufferTooSmall) {
   EXPECT_EQ(slots_size, 2);
 }
 
-TEST_F(BridgeTest, GetSlotInfoSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetSlotInfoSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SLOT_INFO info;
   EXPECT_OK(GetSlotInfo(0, &info));
@@ -223,21 +341,33 @@ TEST_F(BridgeTest, GetSlotInfoSuccess) {
   EXPECT_EQ(info.flags & CKF_TOKEN_PRESENT, CKF_TOKEN_PRESENT);
 }
 
-TEST_F(BridgeTest, GetSlotInfoFailsNotInitialized) {
+TEST(BridgeTest, GetSlotInfoFailsNotInitialized) {
   EXPECT_THAT(GetSlotInfo(0, nullptr),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetSlotInfoFailsInvalidSlotId) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetSlotInfoFailsInvalidSlotId) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(GetSlotInfo(2, nullptr), StatusRvIs(CKR_SLOT_ID_INVALID));
 }
 
-TEST_F(BridgeTest, GetTokenInfoSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetTokenInfoSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_TOKEN_INFO info;
   EXPECT_OK(GetTokenInfo(0, &info));
@@ -246,54 +376,84 @@ TEST_F(BridgeTest, GetTokenInfoSuccess) {
   EXPECT_EQ(info.flags & CKF_TOKEN_INITIALIZED, CKF_TOKEN_INITIALIZED);
 }
 
-TEST_F(BridgeTest, GetTokenInfoFailsNotInitialized) {
+TEST(BridgeTest, GetTokenInfoFailsNotInitialized) {
   EXPECT_THAT(GetTokenInfo(0, nullptr),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetTokenInfoFailsInvalidSlotId) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetTokenInfoFailsInvalidSlotId) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(GetTokenInfo(2, nullptr), StatusRvIs(CKR_SLOT_ID_INVALID));
 }
 
-TEST_F(BridgeTest, OpenSession) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, OpenSession) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
   EXPECT_NE(handle, CK_INVALID_HANDLE);
 }
 
-TEST_F(BridgeTest, OpenSessionFailsNotInitialized) {
+TEST(BridgeTest, OpenSessionFailsNotInitialized) {
   CK_SESSION_HANDLE handle;
   EXPECT_THAT(OpenSession(0, 0, nullptr, nullptr, &handle),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, OpenSessionFailsInvalidSlotId) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, OpenSessionFailsInvalidSlotId) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_THAT(OpenSession(2, CKF_SERIAL_SESSION, nullptr, nullptr, &handle),
               StatusRvIs(CKR_SLOT_ID_INVALID));
 }
 
-TEST_F(BridgeTest, OpenSessionFailsNotSerial) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, OpenSessionFailsNotSerial) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_THAT(OpenSession(0, 0, nullptr, nullptr, &handle),
               StatusRvIs(CKR_SESSION_PARALLEL_NOT_SUPPORTED));
 }
 
-TEST_F(BridgeTest, OpenSessionReadWrite) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, OpenSessionReadWrite) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr,
@@ -306,31 +466,49 @@ TEST_F(BridgeTest, OpenSessionReadWrite) {
   EXPECT_EQ(info.flags & CKF_RW_SESSION, CKF_RW_SESSION);
 }
 
-TEST_F(BridgeTest, CloseSessionSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, CloseSessionSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
   EXPECT_OK(CloseSession(handle));
 }
 
-TEST_F(BridgeTest, CloseSessionFailsNotInitialized) {
+TEST(BridgeTest, CloseSessionFailsNotInitialized) {
   EXPECT_THAT(CloseSession(0), StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, CloseSessionFailsInvalidHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, CloseSessionFailsInvalidHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
   EXPECT_THAT(CloseSession(0), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, CloseSessionFailsAlreadyClosed) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, CloseSessionFailsAlreadyClosed) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
@@ -339,9 +517,74 @@ TEST_F(BridgeTest, CloseSessionFailsAlreadyClosed) {
   EXPECT_THAT(CloseSession(handle), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, GetSessionInfoSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
+TEST(BridgeTest, CloseAllSessionsSuccessfullyClosesCorrectSessions) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  // Initialize two keyrings and create a configuration file.
+  auto client = fake_server->NewClient();
+  kms_v1::KeyRing kr1, kr2;
+  kr1 = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr1);
+  kr2 = CreateKeyRingOrDie(client.get(), kTestLocation, RandomId(), kr2);
+
+  std::string config_file = std::tmpnam(nullptr);
+  std::ofstream(config_file)
+      << absl::StrFormat(R"(
+tokens:
+  - key_ring: "%s"
+    label: "foo"
+  - key_ring: "%s"
+    label: "bar"
+kms_endpoint: "%s"
+use_insecure_grpc_channel_credentials: true
+)",
+                         kr1.name(), kr2.name(), fake_server->listen_addr());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+
+  CK_SESSION_HANDLE h1, h2, h3, h4;
+  EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &h1));
+  EXPECT_OK(OpenSession(1, CKF_SERIAL_SESSION, nullptr, nullptr, &h2));
+  EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &h3));
+  EXPECT_OK(OpenSession(1, CKF_SERIAL_SESSION, nullptr, nullptr, &h4));
+  EXPECT_OK(CloseAllSessions(0));
+
+  EXPECT_THAT(CloseSession(h1), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
+  EXPECT_OK(CloseSession(h2));
+  EXPECT_THAT(CloseSession(h3), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
+  EXPECT_OK(CloseSession(h4));
+}
+
+TEST(BridgeTest, CloseAllSessionsFailsNotInitialized) {
+  EXPECT_THAT(CloseAllSessions(0), StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
+}
+
+TEST(BridgeTest, CloseAllSessionFailsInvalidSlotId) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
+
+  EXPECT_THAT(CloseAllSessions(1337), StatusRvIs(CKR_SLOT_ID_INVALID));
+}
+
+TEST(BridgeTest, GetSessionInfoSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
@@ -353,23 +596,35 @@ TEST_F(BridgeTest, GetSessionInfoSuccess) {
   EXPECT_EQ(info.state, CKS_RO_PUBLIC_SESSION);
 }
 
-TEST_F(BridgeTest, GetSessionInfoFailsNotInitialized) {
+TEST(BridgeTest, GetSessionInfoFailsNotInitialized) {
   CK_SESSION_INFO info;
   EXPECT_THAT(GetSessionInfo(0, &info),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetSessionInfoFailsInvalidHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetSessionInfoFailsInvalidHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_INFO info;
   EXPECT_THAT(GetSessionInfo(0, &info), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, LoginSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LoginSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
@@ -381,9 +636,15 @@ TEST_F(BridgeTest, LoginSuccess) {
   EXPECT_EQ(info.state, CKS_RO_USER_FUNCTIONS);
 }
 
-TEST_F(BridgeTest, LoginAppliesToAllSessions) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LoginAppliesToAllSessions) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle1;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle1));
@@ -400,22 +661,34 @@ TEST_F(BridgeTest, LoginAppliesToAllSessions) {
   EXPECT_EQ(info.state, CKS_RO_USER_FUNCTIONS);
 }
 
-TEST_F(BridgeTest, LoginFailsNotInitialized) {
+TEST(BridgeTest, LoginFailsNotInitialized) {
   EXPECT_THAT(Login(0, CKU_USER, nullptr, 0),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, LoginFailsInvalidHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LoginFailsInvalidHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(Login(0, CKU_USER, nullptr, 0),
               StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, LoginFailsUserSo) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LoginFailsUserSo) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
@@ -423,9 +696,15 @@ TEST_F(BridgeTest, LoginFailsUserSo) {
   EXPECT_THAT(Login(handle, CKU_SO, nullptr, 0), StatusRvIs(CKR_PIN_LOCKED));
 }
 
-TEST_F(BridgeTest, LogoutSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LogoutSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
@@ -438,9 +717,15 @@ TEST_F(BridgeTest, LogoutSuccess) {
   EXPECT_EQ(info.state, CKS_RO_PUBLIC_SESSION);
 }
 
-TEST_F(BridgeTest, LogoutAppliesToAllSessions) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LogoutAppliesToAllSessions) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle1;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle1));
@@ -457,20 +742,32 @@ TEST_F(BridgeTest, LogoutAppliesToAllSessions) {
   EXPECT_EQ(info.state, CKS_RO_PUBLIC_SESSION);
 }
 
-TEST_F(BridgeTest, LogoutFailsNotInitialized) {
+TEST(BridgeTest, LogoutFailsNotInitialized) {
   EXPECT_THAT(Logout(0), StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, LogoutFailsInvalidHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LogoutFailsInvalidHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(Logout(0), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, LogoutFailsNotLoggedIn) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LogoutFailsNotLoggedIn) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
@@ -478,9 +775,15 @@ TEST_F(BridgeTest, LogoutFailsNotLoggedIn) {
   EXPECT_THAT(Logout(handle), StatusRvIs(CKR_USER_NOT_LOGGED_IN));
 }
 
-TEST_F(BridgeTest, LogoutFailsSecondCall) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, LogoutFailsSecondCall) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE handle;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &handle));
@@ -491,9 +794,15 @@ TEST_F(BridgeTest, LogoutFailsSecondCall) {
   EXPECT_THAT(Logout(handle), StatusRvIs(CKR_USER_NOT_LOGGED_IN));
 }
 
-TEST_F(BridgeTest, GetMechanismListSucceeds) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetMechanismListSucceeds) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_ULONG count;
   EXPECT_OK(GetMechanismList(0, nullptr, &count));
@@ -501,13 +810,20 @@ TEST_F(BridgeTest, GetMechanismListSucceeds) {
   std::vector<CK_MECHANISM_TYPE> types(count);
   EXPECT_OK(GetMechanismList(0, types.data(), &count));
   EXPECT_EQ(types.size(), count);
-  EXPECT_THAT(types, IsSupersetOf({CKM_RSA_PKCS, CKM_RSA_PKCS_PSS,
-                                   CKM_RSA_PKCS_OAEP, CKM_ECDSA}));
+  EXPECT_THAT(types,
+              IsSupersetOf({CKM_RSA_PKCS, CKM_RSA_PKCS_PSS, CKM_RSA_PKCS_OAEP,
+                            CKM_ECDSA, CKM_SHA_1_HMAC, CKM_CLOUDKMS_AES_GCM}));
 }
 
-TEST_F(BridgeTest, GetMechanismListFailsInvalidSize) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetMechanismListFailsInvalidSize) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   std::vector<CK_MECHANISM_TYPE> types(1);
   CK_ULONG count = 1;
@@ -516,24 +832,36 @@ TEST_F(BridgeTest, GetMechanismListFailsInvalidSize) {
   EXPECT_THAT(count, Ge(4));
 }
 
-TEST_F(BridgeTest, GetMechanismListFailsNotInitialized) {
+TEST(BridgeTest, GetMechanismListFailsNotInitialized) {
   CK_ULONG count;
   EXPECT_THAT(GetMechanismList(0, nullptr, &count),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetMechanismListFailsInvalidSlotId) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetMechanismListFailsInvalidSlotId) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_ULONG count;
   EXPECT_THAT(GetMechanismList(5, nullptr, &count),
               StatusRvIs(CKR_SLOT_ID_INVALID));
 }
 
-TEST_F(BridgeTest, GetMechanismInfo) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetMechanismInfo) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_MECHANISM_INFO info;
   EXPECT_OK(GetMechanismInfo(0, CKM_RSA_PKCS_PSS, &info));
@@ -543,47 +871,94 @@ TEST_F(BridgeTest, GetMechanismInfo) {
   EXPECT_EQ(info.flags, CKF_SIGN | CKF_VERIFY);
 }
 
-TEST_F(BridgeTest, GetMechanismInfoFailsInvalidMechanism) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetMechanismInfoFailsInvalidMechanism) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_MECHANISM_INFO info;
   EXPECT_THAT(GetMechanismInfo(0, CKM_RSA_X9_31, &info),
               StatusRvIs(CKR_MECHANISM_INVALID));
 }
 
-TEST_F(BridgeTest, GetMechanismInfoFailsNotInitialized) {
+TEST(BridgeTest, GetMechanismInfoMacKeys) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
+  EXPECT_OK(Initialize(&init_args));
+  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+
+  CK_MECHANISM_INFO info;
+  EXPECT_OK(GetMechanismInfo(0, CKM_SHA256_HMAC, &info));
+
+  EXPECT_EQ(info.ulMinKeySize, 32);
+  EXPECT_EQ(info.ulMaxKeySize, 32);
+  EXPECT_EQ(info.flags, CKF_SIGN | CKF_VERIFY);
+}
+
+TEST(BridgeTest, GetMechanismInfoRawEncryptionKeys) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
+  EXPECT_OK(Initialize(&init_args));
+  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+
+  CK_MECHANISM_INFO info;
+  EXPECT_OK(GetMechanismInfo(0, CKM_CLOUDKMS_AES_GCM, &info));
+
+  EXPECT_EQ(info.ulMinKeySize, 16);
+  EXPECT_EQ(info.ulMaxKeySize, 32);
+  EXPECT_EQ(info.flags, CKF_DECRYPT | CKF_ENCRYPT);
+}
+
+TEST(BridgeTest, GetMechanismInfoFailsNotInitialized) {
   CK_MECHANISM_INFO info;
   EXPECT_THAT(GetMechanismInfo(0, CKM_RSA_PKCS, &info),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetMechanismInfoFailsInvalidSlotId) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetMechanismInfoFailsInvalidSlotId) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_MECHANISM_INFO info;
   EXPECT_THAT(GetMechanismInfo(5, CKM_RSA_PKCS_PSS, &info),
               StatusRvIs(CKR_SLOT_ID_INVALID));
 }
 
-TEST_F(BridgeTest, GetAttributeValueSuccess) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv1;
-  ckv1 = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv1);
-  ckv1 = WaitForEnablement(fake_client.get(), ckv1);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -603,23 +978,18 @@ TEST_F(BridgeTest, GetAttributeValueSuccess) {
   EXPECT_EQ(key_type, CKK_EC);
 }
 
-TEST_F(BridgeTest, GetAttributeValueFailsSensitiveAttribute) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv1;
-  ckv1 = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv1);
-  ckv1 = WaitForEnablement(fake_client.get(), ckv1);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueFailsSensitiveAttribute) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -640,23 +1010,18 @@ TEST_F(BridgeTest, GetAttributeValueFailsSensitiveAttribute) {
   EXPECT_EQ(value_attr.ulValueLen, CK_UNAVAILABLE_INFORMATION);
 }
 
-TEST_F(BridgeTest, GetAttributeValueFailsNonExistentAttribute) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv1;
-  ckv1 = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv1);
-  ckv1 = WaitForEnablement(fake_client.get(), ckv1);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueFailsNonExistentAttribute) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -677,23 +1042,18 @@ TEST_F(BridgeTest, GetAttributeValueFailsNonExistentAttribute) {
   EXPECT_EQ(mod_attr.ulValueLen, CK_UNAVAILABLE_INFORMATION);
 }
 
-TEST_F(BridgeTest, GetAttributeValueSuccessNoBuffer) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv1;
-  ckv1 = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv1);
-  ckv1 = WaitForEnablement(fake_client.get(), ckv1);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueSuccessNoBuffer) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -711,23 +1071,18 @@ TEST_F(BridgeTest, GetAttributeValueSuccessNoBuffer) {
   EXPECT_OK(GetAttributeValue(session, object, &public_key, 1));
 }
 
-TEST_F(BridgeTest, GetAttributeValueFailureBufferTooShort) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv1;
-  ckv1 = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv1);
-  ckv1 = WaitForEnablement(fake_client.get(), ckv1);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueFailureBufferTooShort) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -748,23 +1103,18 @@ TEST_F(BridgeTest, GetAttributeValueFailureBufferTooShort) {
   EXPECT_GT(ec_params.ulValueLen, 2);
 }
 
-TEST_F(BridgeTest, GetAttributeValueFailureAllAttributesProcessed) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv1;
-  ckv1 = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv1);
-  ckv1 = WaitForEnablement(fake_client.get(), ckv1);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueFailureAllAttributesProcessed) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -806,22 +1156,34 @@ TEST_F(BridgeTest, GetAttributeValueFailureAllAttributesProcessed) {
   EXPECT_EQ(attr_results[3].ulValueLen, CK_UNAVAILABLE_INFORMATION);
 }
 
-TEST_F(BridgeTest, GetAttributeValueFailureNotInitialized) {
+TEST(BridgeTest, GetAttributeValueFailureNotInitialized) {
   EXPECT_THAT(GetAttributeValue(0, 0, nullptr, 0),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GetAttributeValueFailureInvalidSessionHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueFailureInvalidSessionHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(GetAttributeValue(0, 0, nullptr, 0),
               StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, GetAttributeValueFailureInvalidObjectHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueFailureInvalidObjectHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -830,23 +1192,18 @@ TEST_F(BridgeTest, GetAttributeValueFailureInvalidObjectHandle) {
               StatusRvIs(CKR_OBJECT_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, GetAttributeValueFailureNullTemplate) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv1;
-  ckv1 = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv1);
-  ckv1 = WaitForEnablement(fake_client.get(), ckv1);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GetAttributeValueFailureNullTemplate) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -864,23 +1221,18 @@ TEST_F(BridgeTest, GetAttributeValueFailureNullTemplate) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, FindEcPrivateKey) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv;
-  ckv = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv);
-  ckv = WaitForEnablement(fake_client.get(), ckv);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindEcPrivateKey) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -911,25 +1263,25 @@ TEST_F(BridgeTest, FindEcPrivateKey) {
   EXPECT_OK(FindObjectsFinal(session));
 }
 
-TEST_F(BridgeTest, FindCertificate) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv;
-  ckv = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv);
-  ckv = WaitForEnablement(fake_client.get(), ckv);
-
-  std::ofstream(config_file_, std::ofstream::out | std::ofstream::app)
+TEST(BridgeTest, FindCertificate) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  kms_v1::KeyRing kr;
+  std::string config_file =
+      CreateConfigFileWithOneKeyring(fake_server.get(), &kr);
+  std::ofstream(config_file, std::ofstream::out | std::ofstream::app)
       << "generate_certs: true" << std::endl;
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
 
-  EXPECT_OK(Initialize(&init_args_));
+  auto init_args = InitArgs(config_file.c_str());
+
+  InitializeCryptoKeyAndKeyVersion(
+      fake_server.get(), kr, kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
+
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
 
   CK_SESSION_HANDLE session;
@@ -945,23 +1297,18 @@ TEST_F(BridgeTest, FindCertificate) {
   EXPECT_EQ(found_count, 1);
 }
 
-TEST_F(BridgeTest, NoCertificatesWhenConfigNotSet) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv;
-  ckv = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv);
-  ckv = WaitForEnablement(fake_client.get(), ckv);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, NoCertificatesWhenConfigNotSet) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -976,9 +1323,15 @@ TEST_F(BridgeTest, NoCertificatesWhenConfigNotSet) {
   EXPECT_EQ(found_count, 0);
 }
 
-TEST_F(BridgeTest, FindObjectsInitSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsInitSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -986,22 +1339,34 @@ TEST_F(BridgeTest, FindObjectsInitSuccess) {
   EXPECT_OK(FindObjectsInit(session, nullptr, 0));
 }
 
-TEST_F(BridgeTest, FindObjectsInitFailsNotInitialized) {
+TEST(BridgeTest, FindObjectsInitFailsNotInitialized) {
   EXPECT_THAT(FindObjectsInit(0, nullptr, 0),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, FindObjectsInitFailsInvalidSessionHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsInitFailsInvalidSessionHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(FindObjectsInit(0, nullptr, 0),
               StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, FindObjectsInitFailsAttributeTemplateNullptr) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsInitFailsAttributeTemplateNullptr) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -1010,9 +1375,15 @@ TEST_F(BridgeTest, FindObjectsInitFailsAttributeTemplateNullptr) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, FindObjectsInitFailsAlreadyInitialized) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsInitFailsAlreadyInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -1022,9 +1393,15 @@ TEST_F(BridgeTest, FindObjectsInitFailsAlreadyInitialized) {
               StatusRvIs(CKR_OPERATION_ACTIVE));
 }
 
-TEST_F(BridgeTest, FindObjectsSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -1037,22 +1414,34 @@ TEST_F(BridgeTest, FindObjectsSuccess) {
   EXPECT_EQ(found_count, 0);
 }
 
-TEST_F(BridgeTest, FindObjectsFailsNotInitialized) {
+TEST(BridgeTest, FindObjectsFailsNotInitialized) {
   EXPECT_THAT(FindObjects(0, nullptr, 0, nullptr),
               StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, FindObjectsFailsInvalidSessionHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsFailsInvalidSessionHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(FindObjects(0, nullptr, 0, nullptr),
               StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, FindObjectsFailsPhObjectNull) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsFailsPhObjectNull) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -1064,9 +1453,15 @@ TEST_F(BridgeTest, FindObjectsFailsPhObjectNull) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, FindObjectsFailsPulCountNull) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsFailsPulCountNull) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -1078,9 +1473,15 @@ TEST_F(BridgeTest, FindObjectsFailsPulCountNull) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, FindObjectsFailsOperationNotInitialized) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsFailsOperationNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -1091,9 +1492,15 @@ TEST_F(BridgeTest, FindObjectsFailsOperationNotInitialized) {
               StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, FindObjectsFinalSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsFinalSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -1102,20 +1509,32 @@ TEST_F(BridgeTest, FindObjectsFinalSuccess) {
   EXPECT_OK(FindObjectsFinal(session));
 }
 
-TEST_F(BridgeTest, FindObjectsFinalFailsNotInitialized) {
+TEST(BridgeTest, FindObjectsFinalFailsNotInitialized) {
   EXPECT_THAT(FindObjectsFinal(0), StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, FindObjectsFinalFailsInvalidSessionHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsFinalFailsInvalidSessionHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(FindObjectsFinal(0), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, FindObjectsFinalFailsOperationNotInitialized) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, FindObjectsFinalFailsOperationNotInitialized) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
@@ -1124,11 +1543,21 @@ TEST_F(BridgeTest, FindObjectsFinalFailsOperationNotInitialized) {
               StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, FindObjectsContainsNewResultsAfterRefresh) {
-  std::ofstream(config_file_, std::ofstream::out | std::ofstream::app)
+TEST(BridgeTest, FindObjectsContainsNewResultsAfterRefresh) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  kms_v1::KeyRing kr;
+  std::string config_file =
+      CreateConfigFileWithOneKeyring(fake_server.get(), &kr);
+  std::ofstream(config_file, std::ofstream::out | std::ofstream::app)
       << "refresh_interval_secs: 1" << std::endl;
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
 
-  EXPECT_OK(Initialize(&init_args_));
+  auto init_args = InitArgs(config_file.c_str());
+
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
 
   CK_SESSION_HANDLE session;
@@ -1141,19 +1570,9 @@ TEST_F(BridgeTest, FindObjectsContainsNewResultsAfterRefresh) {
   EXPECT_EQ(found_count, 0);
   EXPECT_OK(FindObjectsFinal(session));
 
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
+  InitializeCryptoKeyAndKeyVersion(
+      fake_server.get(), kr, kms_v1::CryptoKey::ASYMMETRIC_SIGN,
       kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv;
-  ckv = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv);
-  ckv = WaitForEnablement(fake_client.get(), ckv);
 
   absl::SleepFor(absl::Seconds(2));
 
@@ -1163,24 +1582,36 @@ TEST_F(BridgeTest, FindObjectsContainsNewResultsAfterRefresh) {
   EXPECT_OK(FindObjectsFinal(session));
 }
 
-TEST_F(BridgeTest, GenerateKeyPairFailsNotInitialized) {
+TEST(BridgeTest, GenerateKeyPairFailsNotInitialized) {
   EXPECT_THAT(
       GenerateKeyPair(0, nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr),
       StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, GenerateKeyPairFailsInvalidSessionHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GenerateKeyPairFailsInvalidSessionHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(
       GenerateKeyPair(0, nullptr, nullptr, 0, nullptr, 0, nullptr, nullptr),
       StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, GenerateKeyPairFailsMechanismNullptr) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GenerateKeyPairFailsMechanismNullptr) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr,
@@ -1200,9 +1631,15 @@ TEST_F(BridgeTest, GenerateKeyPairFailsMechanismNullptr) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, GenerateKeyPairFailsPublicKeyTemplateMissingPointer) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GenerateKeyPairFailsPublicKeyTemplateMissingPointer) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr,
@@ -1216,9 +1653,15 @@ TEST_F(BridgeTest, GenerateKeyPairFailsPublicKeyTemplateMissingPointer) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, GenerateKeyPairFailsPrivateKeyTemplateMissingPointer) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GenerateKeyPairFailsPrivateKeyTemplateMissingPointer) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr,
@@ -1232,9 +1675,15 @@ TEST_F(BridgeTest, GenerateKeyPairFailsPrivateKeyTemplateMissingPointer) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, GenerateKeyPairFailsPublicKeyHandleNullptr) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GenerateKeyPairFailsPublicKeyHandleNullptr) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr,
@@ -1255,9 +1704,15 @@ TEST_F(BridgeTest, GenerateKeyPairFailsPublicKeyHandleNullptr) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, GenerateKeyPairFailsPrivateKeyHandleNullptr) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, GenerateKeyPairFailsPrivateKeyHandleNullptr) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr,
@@ -1278,8 +1733,19 @@ TEST_F(BridgeTest, GenerateKeyPairFailsPrivateKeyHandleNullptr) {
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
-TEST_F(BridgeTest, GenerateKeyPairSuccess) {
-  EXPECT_OK(Initialize(&init_args_));
+TEST(BridgeTest, GenerateKeyPairSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  kms_v1::KeyRing kr;
+  std::string config_file =
+      CreateConfigFileWithOneKeyring(fake_server.get(), &kr);
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
+
+  auto init_args = InitArgs(config_file.c_str());
+
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
 
   CK_SESSION_HANDLE session;
@@ -1312,18 +1778,25 @@ TEST_F(BridgeTest, GenerateKeyPairSuccess) {
   EXPECT_THAT(found_handles, testing::UnorderedElementsAreArray(handles));
 
   // Ensure that the CKV can be located with direct KMS API calls.
-  auto fake_client = fake_server_->NewClient();
+  auto fake_client = fake_server->NewClient();
   GetCryptoKeyVersionOrDie(
       fake_client.get(),
-      kr1_.name() + "/cryptoKeys/" + key_id + "/cryptoKeyVersions/1");
+      kr.name() + "/cryptoKeys/" + key_id + "/cryptoKeyVersions/1");
 }
 
-TEST_F(BridgeTest,
-       GenerateTwoKeyPairsSuccessWithExperimentalCreateMultipleVersions) {
-  std::ofstream(config_file_, std::ofstream::out | std::ofstream::app)
+TEST(BridgeTest,
+     GenerateTwoKeyPairsSuccessWithExperimentalCreateMultipleVersions) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  std::string config_file = CreateConfigFileWithOneKeyring(fake_server.get());
+  std::ofstream(config_file, std::ofstream::out | std::ofstream::app)
       << "experimental_create_multiple_versions: true" << std::endl;
+  absl::Cleanup config_close = [config_file] {
+    std::remove(config_file.c_str());
+  };
 
-  EXPECT_OK(Initialize(&init_args_));
+  auto init_args = InitArgs(config_file.c_str());
+  EXPECT_OK(Initialize(&init_args));
   absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
 
   CK_SESSION_HANDLE session;
@@ -1347,20 +1820,32 @@ TEST_F(BridgeTest,
                             &ckv_handles[0], &ckv_handles[1]));
 }
 
-TEST_F(BridgeTest, DestroyObjectFailsNotInitialized) {
+TEST(BridgeTest, DestroyObjectFailsNotInitialized) {
   EXPECT_THAT(DestroyObject(0, 0), StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(BridgeTest, DestroyObjectFailsInvalidSessionHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, DestroyObjectFailsInvalidSessionHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   EXPECT_THAT(DestroyObject(0, 0), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, DestroyObjectFailsInvalidObjectHandle) {
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, DestroyObjectFailsInvalidObjectHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr,
@@ -1369,23 +1854,18 @@ TEST_F(BridgeTest, DestroyObjectFailsInvalidObjectHandle) {
   EXPECT_THAT(DestroyObject(session, 0), StatusRvIs(CKR_OBJECT_HANDLE_INVALID));
 }
 
-TEST_F(BridgeTest, DestroyObjectSuccessPrivateKey) {
-  auto fake_client = fake_server_->NewClient();
-
-  kms_v1::CryptoKey ck;
-  ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  ck.mutable_version_template()->set_algorithm(
-      kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-  ck.mutable_version_template()->set_protection_level(
-      kms_v1::ProtectionLevel::HSM);
-  ck = CreateCryptoKeyOrDie(fake_client.get(), kr1_.name(), "ck", ck, true);
-
-  kms_v1::CryptoKeyVersion ckv;
-  ckv = CreateCryptoKeyVersionOrDie(fake_client.get(), ck.name(), ckv);
-  ckv = WaitForEnablement(fake_client.get(), ckv);
-
-  EXPECT_OK(Initialize(&init_args_));
-  absl::Cleanup c = [] { EXPECT_OK(Finalize(nullptr)); };
+TEST(BridgeTest, DestroyObjectSuccessPrivateKey) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(
+      std::string config_file,
+      InitializeBridgeForOneKmsKey(
+          fake_server.get(), kms_v1::CryptoKey::ASYMMETRIC_SIGN,
+          kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
   CK_SESSION_HANDLE session;
   EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION | CKF_RW_SESSION, nullptr,
@@ -1404,622 +1884,60 @@ TEST_F(BridgeTest, DestroyObjectSuccessPrivateKey) {
   EXPECT_OK(DestroyObject(session, handle));
 }
 
-class AsymmetricCryptTest : public BridgeTest {
- protected:
-  void SetUp() override {
-    BridgeTest::SetUp();
-    auto kms_client = fake_server_->NewClient();
+TEST(BridgeTest, GenerateRandomSuccess) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
-    kms_v1::CryptoKey ck;
-    ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_DECRYPT);
-    ck.mutable_version_template()->set_algorithm(
-        kms_v1::CryptoKeyVersion::RSA_DECRYPT_OAEP_2048_SHA256);
-    ck.mutable_version_template()->set_protection_level(
-        kms_v1::ProtectionLevel::HSM);
-    ck = CreateCryptoKeyOrDie(kms_client.get(), kr1_.name(), "ck", ck, true);
+  CK_SESSION_HANDLE session;
+  EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
 
-    kms_v1::CryptoKeyVersion ckv;
-    ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
-    ckv = WaitForEnablement(kms_client.get(), ckv);
-
-    kms_v1::PublicKey pub_proto = GetPublicKey(kms_client.get(), ckv);
-    ASSERT_OK_AND_ASSIGN(pub_pkey_, ParseX509PublicKeyPem(pub_proto.pem()));
-
-    EXPECT_OK(Initialize(&init_args_));
-    EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session_));
-
-    CK_OBJECT_CLASS object_class = CKO_PRIVATE_KEY;
-    CK_ATTRIBUTE attr_template[2] = {
-        {CKA_ID, const_cast<char*>(ckv.name().data()), ckv.name().size()},
-        {CKA_CLASS, &object_class, sizeof(object_class)},
-    };
-    CK_ULONG found_count;
-
-    EXPECT_OK(FindObjectsInit(session_, attr_template, 2));
-    EXPECT_OK(FindObjects(session_, &private_key_, 1, &found_count));
-    EXPECT_EQ(found_count, 1);
-    EXPECT_OK(FindObjectsFinal(session_));
-
-    object_class = CKO_PUBLIC_KEY;
-    EXPECT_OK(FindObjectsInit(session_, attr_template, 2));
-    EXPECT_OK(FindObjects(session_, &public_key_, 1, &found_count));
-    EXPECT_EQ(found_count, 1);
-    EXPECT_OK(FindObjectsFinal(session_))
-  }
-
-  void TearDown() override { EXPECT_OK(Finalize(nullptr)); }
-
-  CK_SESSION_HANDLE session_;
-  CK_OBJECT_HANDLE private_key_;
-  CK_OBJECT_HANDLE public_key_;
-  bssl::UniquePtr<EVP_PKEY> pub_pkey_;
-};
-
-TEST_F(AsymmetricCryptTest, DecryptSuccess) {
-  std::vector<uint8_t> plaintext(128);
-  RAND_bytes(plaintext.data(), plaintext.size());
-
-  uint8_t ciphertext[256];
-  EXPECT_OK(EncryptRsaOaep(pub_pkey_.get(), EVP_sha256(), plaintext,
-                           absl::MakeSpan(ciphertext)));
-
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(DecryptInit(session_, &mech, private_key_));
-
-  CK_ULONG plaintext_size;
-  EXPECT_OK(Decrypt(session_, ciphertext, sizeof(ciphertext), nullptr,
-                    &plaintext_size));
-  EXPECT_EQ(plaintext_size, plaintext.size());
-
-  std::vector<uint8_t> recovered_plaintext(plaintext_size);
-  EXPECT_OK(Decrypt(session_, ciphertext, sizeof(ciphertext),
-                    recovered_plaintext.data(), &plaintext_size));
-  EXPECT_EQ(recovered_plaintext, plaintext);
-  EXPECT_EQ(plaintext_size, plaintext.size());
-
-  // Operation should be terminated after success
-  EXPECT_THAT(Decrypt(session_, ciphertext, sizeof(ciphertext), nullptr,
-                      &plaintext_size),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
+  std::vector<uint8_t> zeroes(32, '\0');
+  std::vector<uint8_t> rand(zeroes);
+  EXPECT_OK(GenerateRandom(session, rand.data(), rand.size()));
+  EXPECT_THAT(rand, Not(ElementsAreArray(zeroes)));
 }
 
-TEST_F(AsymmetricCryptTest, DecryptSuccessSameBuffer) {
-  std::vector<uint8_t> plaintext(128);
-  RAND_bytes(plaintext.data(), plaintext.size());
-
-  std::vector<uint8_t> buf(256);
-  EXPECT_OK(EncryptRsaOaep(pub_pkey_.get(), EVP_sha256(), plaintext,
-                           absl::MakeSpan(buf)));
-
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(DecryptInit(session_, &mech, private_key_));
-
-  CK_ULONG plaintext_size = buf.size();
-  EXPECT_OK(
-      Decrypt(session_, buf.data(), buf.size(), buf.data(), &plaintext_size));
-  EXPECT_EQ(plaintext_size, plaintext.size());
-
-  buf.resize(plaintext_size);
-  EXPECT_EQ(buf, plaintext);
+TEST(BridgeTest, GenerateRandomFailsNotInitialized) {
+  EXPECT_THAT(GenerateRandom(0, nullptr, 0),
+              StatusRvIs(CKR_CRYPTOKI_NOT_INITIALIZED));
 }
 
-TEST_F(AsymmetricCryptTest, DecryptBufferTooSmall) {
-  std::vector<uint8_t> plaintext(128);
-  RAND_bytes(plaintext.data(), plaintext.size());
+TEST(BridgeTest, GenerateRandomFailsInvalidSessionHandle) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
 
-  uint8_t ciphertext[256];
-  EXPECT_OK(EncryptRsaOaep(pub_pkey_.get(), EVP_sha256(), plaintext,
-                           absl::MakeSpan(ciphertext)));
-
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(DecryptInit(session_, &mech, private_key_));
-
-  std::vector<uint8_t> recovered_plaintext(32);
-  CK_ULONG plaintext_size = recovered_plaintext.size();
-  EXPECT_THAT(Decrypt(session_, ciphertext, sizeof(ciphertext),
-                      recovered_plaintext.data(), &plaintext_size),
-              StatusRvIs(CKR_BUFFER_TOO_SMALL));
-  EXPECT_EQ(plaintext_size, plaintext.size());
-
-  // Operation should be able to proceed after CKR_BUFFER_TOO_SMALL.
-  recovered_plaintext.resize(plaintext_size);
-  EXPECT_OK(Decrypt(session_, ciphertext, sizeof(ciphertext),
-                    recovered_plaintext.data(), &plaintext_size));
-  EXPECT_EQ(plaintext, recovered_plaintext);
-
-  // Operation should now be terminated.
-  EXPECT_THAT(Decrypt(session_, ciphertext, sizeof(ciphertext), nullptr,
-                      &plaintext_size),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricCryptTest, DecryptParametersMismatch) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA512, CKG_MGF1_SHA512,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_THAT(DecryptInit(session_, &mech, private_key_),
-              StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
-}
-
-TEST_F(AsymmetricCryptTest, DecryptInitFailsInvalidSessionHandle) {
-  EXPECT_THAT(DecryptInit(0, nullptr, 0),
+  EXPECT_THAT(GenerateRandom(0, nullptr, 0),
               StatusRvIs(CKR_SESSION_HANDLE_INVALID));
 }
 
-TEST_F(AsymmetricCryptTest, DecryptInitFailsInvalidKeyHandle) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_THAT(DecryptInit(session_, &mech, 0),
-              StatusRvIs(CKR_KEY_HANDLE_INVALID));
-}
-
-TEST_F(AsymmetricCryptTest, DecryptInitFailsOperationActive) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(DecryptInit(session_, &mech, private_key_));
-  EXPECT_THAT(DecryptInit(session_, &mech, private_key_),
-              StatusRvIs(CKR_OPERATION_ACTIVE));
-}
-
-TEST_F(AsymmetricCryptTest, DecryptFailsOperationNotInitialized) {
-  uint8_t ciphertext[256];
-  CK_ULONG plaintext_size;
-  EXPECT_THAT(Decrypt(session_, ciphertext, sizeof(ciphertext), nullptr,
-                      &plaintext_size),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricCryptTest, DecryptFailsNullCiphertext) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(DecryptInit(session_, &mech, private_key_));
-
-  CK_ULONG plaintext_size;
-  EXPECT_THAT(Decrypt(session_, nullptr, 0, nullptr, &plaintext_size),
-              StatusRvIs(CKR_ARGUMENTS_BAD));
-}
-
-TEST_F(AsymmetricCryptTest, DecryptFailsNullPlaintextSize) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(DecryptInit(session_, &mech, private_key_));
-
-  uint8_t ciphertext[256];
-  EXPECT_THAT(
-      Decrypt(session_, ciphertext, sizeof(ciphertext), nullptr, nullptr),
-      StatusRvIs(CKR_ARGUMENTS_BAD));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptSuccess) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(EncryptInit(session_, &mech, public_key_));
-
-  std::vector<uint8_t> plaintext(128);
-  RAND_bytes(plaintext.data(), plaintext.size());
-
-  CK_ULONG ciphertext_size;
-  EXPECT_OK(Encrypt(session_, plaintext.data(), plaintext.size(), nullptr,
-                    &ciphertext_size));
-  EXPECT_EQ(ciphertext_size, 256);
-
-  std::vector<uint8_t> ciphertext(ciphertext_size);
-  EXPECT_OK(Encrypt(session_, plaintext.data(), plaintext.size(),
-                    ciphertext.data(), &ciphertext_size));
-
-  // Operation should be terminated after success
-  EXPECT_THAT(Encrypt(session_, plaintext.data(), plaintext.size(), nullptr,
-                      &ciphertext_size),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptSuccessSameBuffer) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(EncryptInit(session_, &mech, public_key_));
-
-  std::vector<uint8_t> plaintext(128);
-  RAND_bytes(plaintext.data(), plaintext.size());
-
-  std::vector<uint8_t> buf(256);
-  std::copy(plaintext.begin(), plaintext.end(), buf.data());
-
-  CK_ULONG ciphertext_size = buf.size();
-  EXPECT_OK(Encrypt(session_, buf.data(), 128, buf.data(), &ciphertext_size));
-  EXPECT_EQ(ciphertext_size, 256);
-
-  EXPECT_OK(DecryptInit(session_, &mech, private_key_));
-
-  std::vector<uint8_t> recovered_plaintext(128);
-  CK_ULONG recovered_plaintext_size = recovered_plaintext.size();
-  EXPECT_OK(Decrypt(session_, buf.data(), buf.size(),
-                    recovered_plaintext.data(), &recovered_plaintext_size));
-
-  EXPECT_EQ(recovered_plaintext, plaintext);
-}
-
-TEST_F(AsymmetricCryptTest, EncryptBufferTooSmall) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(EncryptInit(session_, &mech, public_key_));
-
-  std::vector<uint8_t> plaintext(128);
-  RAND_bytes(plaintext.data(), plaintext.size());
-
-  std::vector<uint8_t> ciphertext(255);
-  CK_ULONG ciphertext_size = ciphertext.size();
-  EXPECT_THAT(Encrypt(session_, plaintext.data(), plaintext.size(),
-                      ciphertext.data(), &ciphertext_size),
-              StatusRvIs(CKR_BUFFER_TOO_SMALL));
-  EXPECT_EQ(ciphertext_size, 256);
-
-  // Operation should be able to proceed after CKR_BUFFER_TOO_SMALL.
-  ciphertext.resize(ciphertext_size);
-  EXPECT_OK(Encrypt(session_, plaintext.data(), plaintext.size(),
-                    ciphertext.data(), &ciphertext_size));
-
-  // Operation should now be terminated.
-  EXPECT_THAT(Encrypt(session_, plaintext.data(), plaintext.size(), nullptr,
-                      &ciphertext_size),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptParametersMismatch) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA512, CKG_MGF1_SHA512,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_THAT(EncryptInit(session_, &mech, public_key_),
-              StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptInitFailsInvalidSessionHandle) {
-  EXPECT_THAT(EncryptInit(0, nullptr, 0),
-              StatusRvIs(CKR_SESSION_HANDLE_INVALID));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptInitFailsInvalidKeyHandle) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_THAT(EncryptInit(session_, &mech, 0),
-              StatusRvIs(CKR_KEY_HANDLE_INVALID));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptInitFailsOperationActive) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(EncryptInit(session_, &mech, public_key_));
-  EXPECT_THAT(EncryptInit(session_, &mech, public_key_),
-              StatusRvIs(CKR_OPERATION_ACTIVE));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptFailsOperationNotInitialized) {
-  uint8_t plaintext[32];
-  CK_ULONG ciphertext_size;
-  EXPECT_THAT(Encrypt(session_, plaintext, sizeof(plaintext), nullptr,
-                      &ciphertext_size),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptFailsNullPLaintext) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(EncryptInit(session_, &mech, public_key_));
-
-  CK_ULONG ciphertext_size;
-  EXPECT_THAT(Encrypt(session_, nullptr, 0, nullptr, &ciphertext_size),
-              StatusRvIs(CKR_ARGUMENTS_BAD));
-}
-
-TEST_F(AsymmetricCryptTest, EncryptFailsNullCiphertextSize) {
-  CK_RSA_PKCS_OAEP_PARAMS params{CKM_SHA256, CKG_MGF1_SHA256,
-                                 CKZ_DATA_SPECIFIED, nullptr, 0};
-  CK_MECHANISM mech{CKM_RSA_PKCS_OAEP, &params, sizeof(params)};
-
-  EXPECT_OK(EncryptInit(session_, &mech, public_key_));
-
-  uint8_t plaintext[32];
-  EXPECT_THAT(Encrypt(session_, plaintext, sizeof(plaintext), nullptr, nullptr),
-              StatusRvIs(CKR_ARGUMENTS_BAD));
-}
-
-class AsymmetricSignTest : public BridgeTest {
- protected:
-  void SetUp() override {
-    BridgeTest::SetUp();
-    auto kms_client = fake_server_->NewClient();
-
-    kms_v1::CryptoKey ck;
-    ck.set_purpose(kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-    ck.mutable_version_template()->set_algorithm(
-        kms_v1::CryptoKeyVersion::EC_SIGN_P256_SHA256);
-    ck.mutable_version_template()->set_protection_level(
-        kms_v1::ProtectionLevel::HSM);
-    ck = CreateCryptoKeyOrDie(kms_client.get(), kr1_.name(), "ck", ck, true);
-
-    kms_v1::CryptoKeyVersion ckv;
-    ckv = CreateCryptoKeyVersionOrDie(kms_client.get(), ck.name(), ckv);
-    ckv = WaitForEnablement(kms_client.get(), ckv);
-
-    kms_v1::PublicKey pub_proto = GetPublicKey(kms_client.get(), ckv);
-    ASSERT_OK_AND_ASSIGN(pub_pkey_, ParseX509PublicKeyPem(pub_proto.pem()));
-
-    EXPECT_OK(Initialize(&init_args_));
-    EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session_));
-
-    CK_OBJECT_CLASS object_class = CKO_PRIVATE_KEY;
-    CK_ATTRIBUTE attr_template[2] = {
-        {CKA_ID, const_cast<char*>(ckv.name().data()), ckv.name().size()},
-        {CKA_CLASS, &object_class, sizeof(object_class)},
-    };
-    CK_ULONG found_count;
-
-    EXPECT_OK(FindObjectsInit(session_, attr_template, 2));
-    EXPECT_OK(FindObjects(session_, &private_key_, 1, &found_count));
-    EXPECT_EQ(found_count, 1);
-    EXPECT_OK(FindObjectsFinal(session_));
-
-    object_class = CKO_PUBLIC_KEY;
-    EXPECT_OK(FindObjectsInit(session_, attr_template, 2));
-    EXPECT_OK(FindObjects(session_, &public_key_, 1, &found_count));
-    EXPECT_EQ(found_count, 1);
-    EXPECT_OK(FindObjectsFinal(session_))
-  }
-
-  void TearDown() override { EXPECT_OK(Finalize(nullptr)); }
-
-  CK_SESSION_HANDLE session_;
-  CK_OBJECT_HANDLE private_key_;
-  CK_OBJECT_HANDLE public_key_;
-  bssl::UniquePtr<EVP_PKEY> pub_pkey_;
-};
-
-TEST_F(AsymmetricSignTest, SignVerifySuccess) {
-  std::vector<uint8_t> data(128);
-  RAND_bytes(data.data(), data.size());
-
-  uint8_t hash[32];
-  SHA256(data.data(), data.size(), hash);
-
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-
-  EXPECT_OK(SignInit(session_, &mech, private_key_));
-
-  CK_ULONG signature_size;
-  EXPECT_OK(Sign(session_, hash, sizeof(hash), nullptr, &signature_size));
-  EXPECT_EQ(signature_size, 64);
-
-  std::vector<uint8_t> signature(signature_size);
-  EXPECT_OK(
-      Sign(session_, hash, sizeof(hash), signature.data(), &signature_size));
-
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-  EXPECT_OK(
-      Verify(session_, hash, sizeof(hash), signature.data(), signature.size()));
-
-  // Operation should be terminated after success
-  EXPECT_THAT(
-      Verify(session_, hash, sizeof(hash), signature.data(), signature.size()),
-      StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricSignTest, SignHashTooSmall) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(SignInit(session_, &mech, private_key_));
-
-  uint8_t hash[31], sig[64];
-  CK_ULONG signature_size = sizeof(sig);
-  EXPECT_THAT(Sign(session_, hash, sizeof(hash), sig, &signature_size),
-              StatusRvIs(CKR_DATA_LEN_RANGE));
-}
-
-TEST_F(AsymmetricSignTest, SignSameBuffer) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(SignInit(session_, &mech, private_key_));
-
-  std::vector<uint8_t> digest(32);
-  RAND_bytes(digest.data(), digest.size());
-
-  std::vector<uint8_t> buf(64);
-  std::copy(digest.begin(), digest.end(), buf.begin());
-  CK_ULONG signature_size = buf.size();
-
-  EXPECT_OK(Sign(session_, buf.data(), 32, buf.data(), &signature_size));
-
-  EXPECT_OK(EcdsaVerifyP1363(EVP_PKEY_get0_EC_KEY(pub_pkey_.get()),
-                             EVP_sha256(), digest, buf));
-}
-
-TEST_F(AsymmetricSignTest, SignBufferTooSmall) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(SignInit(session_, &mech, private_key_));
-
-  std::vector<uint8_t> hash(32), sig(63);
-  CK_ULONG signature_size = sig.size();
-  EXPECT_THAT(
-      Sign(session_, hash.data(), hash.size(), sig.data(), &signature_size),
-      StatusRvIs(CKR_BUFFER_TOO_SMALL));
-  EXPECT_EQ(signature_size, 64);
-
-  sig.resize(signature_size);
-  EXPECT_OK(
-      Sign(session_, hash.data(), hash.size(), sig.data(), &signature_size));
-
-  // Operation should now be terminated.
-  EXPECT_THAT(
-      Sign(session_, hash.data(), hash.size(), sig.data(), &signature_size),
-      StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricSignTest, SignInitFailsInvalidSessionHandle) {
-  EXPECT_THAT(SignInit(0, nullptr, 0), StatusRvIs(CKR_SESSION_HANDLE_INVALID));
-}
-
-TEST_F(AsymmetricSignTest, SignInitFailsInvalidKeyHandle) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_THAT(SignInit(session_, &mech, 0), StatusRvIs(CKR_KEY_HANDLE_INVALID));
-}
-
-TEST_F(AsymmetricSignTest, SignInitFailsOperationActive) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(SignInit(session_, &mech, private_key_));
-  EXPECT_THAT(SignInit(session_, &mech, private_key_),
-              StatusRvIs(CKR_OPERATION_ACTIVE));
-}
-
-TEST_F(AsymmetricSignTest, SignFailsOperationNotInitialized) {
-  uint8_t hash[32];
-  CK_ULONG signature_size;
-  EXPECT_THAT(Sign(session_, hash, sizeof(hash), nullptr, &signature_size),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricSignTest, SignFailsNullHash) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(SignInit(session_, &mech, private_key_));
-
-  CK_ULONG signature_size;
-  EXPECT_THAT(Sign(session_, nullptr, 0, nullptr, &signature_size),
-              StatusRvIs(CKR_ARGUMENTS_BAD));
-}
-
-TEST_F(AsymmetricSignTest, VerifyFailsNullSignatureSize) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(SignInit(session_, &mech, private_key_));
-
-  uint8_t hash[32];
-  EXPECT_THAT(Sign(session_, hash, sizeof(hash), nullptr, nullptr),
-              StatusRvIs(CKR_ARGUMENTS_BAD));
-}
-
-TEST_F(AsymmetricSignTest, VerifyInvalidSignature) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-
-  uint8_t hash[32], sig[64];
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_SIGNATURE_INVALID));
-
-  // Operation should be terminated after failure
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricSignTest, VerifyHashTooSmall) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-
-  uint8_t hash[31], sig[64];
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_DATA_LEN_RANGE));
-
-  // Operation should be terminated after failure
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricSignTest, VerifyHashTooLarge) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-
-  uint8_t hash[33], sig[64];
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_DATA_LEN_RANGE));
-}
-
-TEST_F(AsymmetricSignTest, VerifySignatureTooSmall) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-
-  uint8_t hash[32], sig[63];
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_SIGNATURE_LEN_RANGE));
-
-  // Operation should be terminated after failure
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricSignTest, VerifySignatureTooLarge) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-
-  uint8_t hash[32], sig[65];
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_SIGNATURE_LEN_RANGE));
-}
-
-TEST_F(AsymmetricSignTest, VerifyInitFailsInvalidSessionHandle) {
-  EXPECT_THAT(VerifyInit(0, nullptr, 0),
-              StatusRvIs(CKR_SESSION_HANDLE_INVALID));
-}
-
-TEST_F(AsymmetricSignTest, VerifyInitFailsInvalidKeyHandle) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_THAT(VerifyInit(session_, &mech, 0),
-              StatusRvIs(CKR_KEY_HANDLE_INVALID));
-}
-
-TEST_F(AsymmetricSignTest, VerifyInitFailsOperationActive) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-  EXPECT_THAT(VerifyInit(session_, &mech, public_key_),
-              StatusRvIs(CKR_OPERATION_ACTIVE));
-}
-
-TEST_F(AsymmetricSignTest, VerifyFailsOperationNotInitialized) {
-  uint8_t hash[32], sig[64];
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), sig, sizeof(sig)),
-              StatusRvIs(CKR_OPERATION_NOT_INITIALIZED));
-}
-
-TEST_F(AsymmetricSignTest, VerifyFailsNullHash) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-
-  uint8_t sig[64];
-  EXPECT_THAT(Verify(session_, nullptr, 0, sig, sizeof(sig)),
-              StatusRvIs(CKR_ARGUMENTS_BAD));
-}
-
-TEST_F(AsymmetricSignTest, VerifyFailsNullSignature) {
-  CK_MECHANISM mech{CKM_ECDSA, nullptr, 0};
-  EXPECT_OK(VerifyInit(session_, &mech, public_key_));
-
-  uint8_t hash[32];
-  EXPECT_THAT(Verify(session_, hash, sizeof(hash), nullptr, 0),
+TEST(BridgeTest, GenerateRandomFailsNullBuffer) {
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<fakekms::Server> fake_server,
+                       fakekms::Server::New());
+  ASSERT_OK_AND_ASSIGN(std::string config_file,
+                       InitializeBridgeForOneKmsKeyRing(fake_server.get()));
+  absl::Cleanup c = [config_file] {
+    std::remove(config_file.c_str());
+    EXPECT_OK(Finalize(nullptr));
+  };
+
+  CK_SESSION_HANDLE session;
+  EXPECT_OK(OpenSession(0, CKF_SERIAL_SESSION, nullptr, nullptr, &session));
+
+  EXPECT_THAT(GenerateRandom(session, nullptr, 0),
               StatusRvIs(CKR_ARGUMENTS_BAD));
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

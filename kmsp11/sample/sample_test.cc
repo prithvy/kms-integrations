@@ -17,10 +17,10 @@
 #include <fstream>
 
 #include "absl/cleanup/cleanup.h"
+#include "common/test/test_status_macros.h"
 #include "fakekms/cpp/fakekms.h"
 #include "gmock/gmock.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "tools/cpp/runfiles/runfiles.h"
 
 extern "C" {
@@ -28,7 +28,7 @@ extern int run_sample(const char* library_path, const char* config_file_path,
                       const char* ec_p256_signing_key_id);
 }
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 constexpr char kSharedLibraryLocation[] =
@@ -79,4 +79,4 @@ use_insecure_grpc_channel_credentials: true
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

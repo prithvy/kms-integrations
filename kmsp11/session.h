@@ -20,7 +20,7 @@
 #include "kmsp11/operation/operation.h"
 #include "kmsp11/token.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 
 enum class SessionType { kReadOnly, kReadWrite };
 
@@ -51,20 +51,28 @@ class Session {
                            CK_MECHANISM* mechanism);
   absl::StatusOr<absl::Span<const uint8_t>> Decrypt(
       absl::Span<const uint8_t> ciphertext);
+  absl::Status DecryptUpdate(absl::Span<const uint8_t> ciphertext);
+  absl::StatusOr<absl::Span<const uint8_t>> DecryptFinal();
 
   absl::Status EncryptInit(std::shared_ptr<Object> key,
                            CK_MECHANISM* mechanism);
   absl::StatusOr<absl::Span<const uint8_t>> Encrypt(
       absl::Span<const uint8_t> plaintext);
+  absl::Status EncryptUpdate(absl::Span<const uint8_t> plaintext);
+  absl::StatusOr<absl::Span<const uint8_t>> EncryptFinal();
 
   absl::Status SignInit(std::shared_ptr<Object> key, CK_MECHANISM* mechanism);
   absl::Status Sign(absl::Span<const uint8_t> digest,
                     absl::Span<uint8_t> signature);
+  absl::Status SignUpdate(absl::Span<const uint8_t> data);
+  absl::Status SignFinal(absl::Span<uint8_t> signature);
   absl::StatusOr<size_t> SignatureLength();
 
   absl::Status VerifyInit(std::shared_ptr<Object> key, CK_MECHANISM* mechanism);
   absl::Status Verify(absl::Span<const uint8_t> digest,
                       absl::Span<const uint8_t> signature);
+  absl::Status VerifyUpdate(absl::Span<const uint8_t> data);
+  absl::Status VerifyFinal(absl::Span<const uint8_t> signature);
 
   absl::StatusOr<AsymmetricHandleSet> GenerateKeyPair(
       const CK_MECHANISM& mechanism,
@@ -72,7 +80,14 @@ class Session {
       absl::Span<const CK_ATTRIBUTE> private_key_attrs,
       bool experimental_create_multiple_versions = false);
 
+  absl::StatusOr<CK_OBJECT_HANDLE> GenerateKey(
+      const CK_MECHANISM& mechanism,
+      absl::Span<const CK_ATTRIBUTE> secret_key_attrs,
+      bool experimental_create_multiple_versions = false);
+
   absl::Status DestroyObject(std::shared_ptr<Object> object);
+
+  absl::Status GenerateRandom(absl::Span<uint8_t> buffer);
 
  private:
   Token* token_;
@@ -83,6 +98,6 @@ class Session {
   std::optional<Operation> op_ ABSL_GUARDED_BY(op_mutex_);
 };
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11
 
 #endif  // KMSP11_SESSION_H_

@@ -35,17 +35,20 @@ cd "${PROJECT_ROOT}"
 export RESULTS_DIR="${KOKORO_ARTIFACTS_DIR}/results"
 mkdir "${RESULTS_DIR}"
 
-sudo pkg update -f
-sudo pkg install -y cmake ninja
-sudo pkg install -y ${KOKORO_GFILE_DIR}/bazel-4.2.1-freebsd11-amd64.txz
-
-# Make Bazel use a JDK that isn't a million years old, which fixes weird
-# gRPC connection issues with remote build cache. :-(
-export JAVA_HOME=/usr/local/openjdk11
+# Install package dependencies. Stored in GCS since FreeBSD aggressively
+# turns down package repositories when a distribution hits end of life.
+tar zxvf ${KOKORO_GFILE_DIR}/freebsd13-amd64-packages.tar.gz -C ${KOKORO_ARTIFACTS_DIR}
+pushd ${KOKORO_ARTIFACTS_DIR}/freebsd13-amd64-packages
+sudo pkg add bazel-6.2.0.pkg
+#  Required for BoringSSL FIPS builds.
+sudo pkg add cmake-core-3.26.1_3.pkg
+sudo pkg add ninja-1.11.1,2.pkg
+popd
 
 # Configure user.bazelrc with remote build caching options
 cp .kokoro/remote_cache.bazelrc user.bazelrc
-echo "build --remote_default_exec_properties=cache-silo-key=freebsd" >> user.bazelrc
+echo "build --remote_default_exec_properties=cache-silo-key=${KOKORO_JOB_NAME}" \
+  >> user.bazelrc
 
 # Ensure that build outputs and test logs are uploaded even on failure
 _upload_artifacts() {
@@ -53,18 +56,28 @@ _upload_artifacts() {
     cp "${PROJECT_ROOT}/bazel-bin/kmsp11/main/libkmsp11.so" \
       "${RESULTS_DIR}/libkmsp11.so"
   fi
+  if [ -e "${PROJECT_ROOT}/bazel-bin/kmsp11/test/e2e/e2e_test" ]; then
+    cp "${PROJECT_ROOT}/bazel-bin/kmsp11/test/e2e/e2e_test" \
+      "${RESULTS_DIR}/libkmsp11_e2e_test"
+  fi
 
   cp "${PROJECT_ROOT}/LICENSE" "${RESULTS_DIR}"
-  cp "${PROJECT_ROOT}/NOTICE" "${RESULTS_DIR}"
 
   python3 "${PROJECT_ROOT}/.kokoro/copy_test_outputs.py" \
     "${PROJECT_ROOT}/bazel-testlogs" "${RESULTS_DIR}/testlogs"
 }
 trap _upload_artifacts EXIT
 
+# This is a temporary hack to work around the fact that we don't
+# have the latest Bazel on FreeBSD.
+echo '6.2.0' > .bazelversion
+
+# Ensure Bazel version information is included in the build log
+bazel version
+
 export BAZEL_ARGS="-c opt --keep_going ${BAZEL_EXTRA_ARGS}"
 
-bazel test ${BAZEL_ARGS} ... :release_tests
+bazel test ${BAZEL_ARGS} ... :ci_only_tests
 
 bazel run ${BAZEL_ARGS} //kmsp11/tools/buildsigner -- \
   -signing_key=${BUILD_SIGNING_KEY} \

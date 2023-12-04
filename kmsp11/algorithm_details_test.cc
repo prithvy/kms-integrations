@@ -14,9 +14,11 @@
 
 #include "kmsp11/algorithm_details.h"
 
-#include "kmsp11/test/test_status_macros.h"
+#include "common/test/test_status_macros.h"
+#include "kmsp11/kmsp11.h"
+#include "kmsp11/test/matchers.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 using ::testing::ElementsAre;
@@ -28,7 +30,8 @@ TEST(GetAlgorithmDetailsTest, AlgorithmEc) {
 
   EXPECT_EQ(details.algorithm, kms_v1::CryptoKeyVersion::EC_SIGN_P384_SHA384);
   EXPECT_EQ(details.purpose, kms_v1::CryptoKey::ASYMMETRIC_SIGN);
-  EXPECT_THAT(details.allowed_mechanisms, ElementsAre(CKM_ECDSA));
+  EXPECT_THAT(details.allowed_mechanisms,
+              ElementsAre(CKM_ECDSA, CKM_ECDSA_SHA384));
   EXPECT_EQ(details.key_type, CKK_EC);
   EXPECT_EQ(details.key_bit_length, 384);
   EXPECT_EQ(details.key_gen_mechanism, CKM_EC_KEY_PAIR_GEN);
@@ -50,6 +53,59 @@ TEST(GetAlgorithmDetailsTest, AlgorithmRsaOaep) {
   EXPECT_EQ(details.digest_mechanism, CKM_SHA256);
 }
 
+TEST(GetAlgorithmDetailsTest, AlgorithmHmac) {
+  ASSERT_OK_AND_ASSIGN(AlgorithmDetails details,
+                       GetDetails(kms_v1::CryptoKeyVersion::HMAC_SHA256));
+
+  EXPECT_EQ(details.algorithm, kms_v1::CryptoKeyVersion::HMAC_SHA256);
+  EXPECT_EQ(details.purpose, kms_v1::CryptoKey::MAC);
+  EXPECT_THAT(details.allowed_mechanisms, ElementsAre(CKM_SHA256_HMAC));
+  EXPECT_EQ(details.key_type, CKK_SHA256_HMAC);
+  EXPECT_EQ(details.key_bit_length, 256);
+  EXPECT_EQ(details.key_gen_mechanism, CKM_GENERIC_SECRET_KEY_GEN);
+  EXPECT_EQ(details.digest_mechanism, std::nullopt);
+}
+
+TEST(GetAlgorithmDetailsTest, AlgorithmAesGcm) {
+  ASSERT_OK_AND_ASSIGN(AlgorithmDetails details,
+                       GetDetails(kms_v1::CryptoKeyVersion::AES_256_GCM));
+
+  EXPECT_EQ(details.algorithm, kms_v1::CryptoKeyVersion::AES_256_GCM);
+  EXPECT_EQ(details.purpose, kms_v1::CryptoKey::RAW_ENCRYPT_DECRYPT);
+  EXPECT_THAT(details.allowed_mechanisms, ElementsAre(CKM_CLOUDKMS_AES_GCM));
+  EXPECT_EQ(details.key_type, CKK_AES);
+  EXPECT_EQ(details.key_bit_length, 256);
+  EXPECT_EQ(details.key_gen_mechanism, CKM_AES_KEY_GEN);
+  EXPECT_EQ(details.digest_mechanism, std::nullopt);
+}
+
+TEST(GetAlgorithmDetailsTest, AlgorithmAesCbc) {
+  ASSERT_OK_AND_ASSIGN(AlgorithmDetails details,
+                       GetDetails(kms_v1::CryptoKeyVersion::AES_128_CBC));
+
+  EXPECT_EQ(details.algorithm, kms_v1::CryptoKeyVersion::AES_128_CBC);
+  EXPECT_EQ(details.purpose, kms_v1::CryptoKey::RAW_ENCRYPT_DECRYPT);
+  EXPECT_THAT(details.allowed_mechanisms,
+              ElementsAre(CKM_AES_CBC, CKM_AES_CBC_PAD));
+  EXPECT_EQ(details.key_type, CKK_AES);
+  EXPECT_EQ(details.key_bit_length, 128);
+  EXPECT_EQ(details.key_gen_mechanism, CKM_AES_KEY_GEN);
+  EXPECT_EQ(details.digest_mechanism, std::nullopt);
+}
+
+TEST(GetAlgorithmDetailsTest, AlgorithmAesCtr) {
+  ASSERT_OK_AND_ASSIGN(AlgorithmDetails details,
+                       GetDetails(kms_v1::CryptoKeyVersion::AES_256_CTR));
+
+  EXPECT_EQ(details.algorithm, kms_v1::CryptoKeyVersion::AES_256_CTR);
+  EXPECT_EQ(details.purpose, kms_v1::CryptoKey::RAW_ENCRYPT_DECRYPT);
+  EXPECT_THAT(details.allowed_mechanisms, ElementsAre(CKM_AES_CTR));
+  EXPECT_EQ(details.key_type, CKK_AES);
+  EXPECT_EQ(details.key_bit_length, 256);
+  EXPECT_EQ(details.key_gen_mechanism, CKM_AES_KEY_GEN);
+  EXPECT_EQ(details.digest_mechanism, std::nullopt);
+}
+
 TEST(GetAlgorithmDetailsTest, AlgorithmNotFound) {
   absl::StatusOr<AlgorithmDetails> details =
       GetDetails(kms_v1::CryptoKeyVersion::EXTERNAL_SYMMETRIC_ENCRYPTION);
@@ -59,4 +115,4 @@ TEST(GetAlgorithmDetailsTest, AlgorithmNotFound) {
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

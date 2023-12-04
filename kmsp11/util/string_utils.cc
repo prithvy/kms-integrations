@@ -14,12 +14,11 @@
 
 #include "kmsp11/util/string_utils.h"
 
-#include <fstream>
-
 #include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
 #include "kmsp11/util/errors.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 
 absl::Status CryptokiStrCopy(std::string_view src, absl::Span<uint8_t> dest,
                              char pad_char) {
@@ -70,14 +69,15 @@ absl::StatusOr<std::string> ExtractKeyId(std::string_view version_name) {
   return parts[7];
 }
 
-absl::StatusOr<std::string> ReadFileToString(const std::string& file_path) {
-  std::ifstream in(file_path.c_str());
-  if (in.fail()) {
-    return absl::FailedPreconditionError(
-        absl::StrCat("failed to read file ", file_path));
+absl::StatusOr<std::string> ExtractLocationName(
+    std::string_view key_ring_name) {
+  std::vector<std::string> parts = absl::StrSplit(key_ring_name, '/');
+  if (parts.size() != 6 || parts[0] != "projects" || parts[2] != "locations" ||
+      parts[4] != "keyRings") {
+    return NewInternalError(
+        absl::StrCat("invalid KeyRing name: ", key_ring_name), SOURCE_LOCATION);
   }
-  return std::string((std::istreambuf_iterator<char>(in)),
-                     (std::istreambuf_iterator<char>()));
+  return absl::StrJoin(absl::Span<std::string>(parts.data(), 4), "/");
 }
 
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

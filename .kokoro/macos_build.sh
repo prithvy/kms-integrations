@@ -36,17 +36,17 @@ export RESULTS_DIR="${KOKORO_ARTIFACTS_DIR}/results"
 mkdir "${RESULTS_DIR}"
 
 # Unwrap our wrapped service account key
-export GOOGLE_APPLICATION_CREDENTIALS=${PROJECT_ROOT}/oss-tools-ci-key.json
+export GOOGLE_APPLICATION_CREDENTIALS=${KOKORO_ARTIFACTS_DIR}/oss-tools-ci-key.json
 go run ./.kokoro/unwrap_key.go \
   -wrapping_key_file=${KOKORO_KEYSTORE_DIR}/75220_token-wrapping-key \
   -wrapped_key_file=${KOKORO_GFILE_DIR}/oss-tools-ci-key.json.enc \
   > ${GOOGLE_APPLICATION_CREDENTIALS}
 
-export USE_BAZEL_VERSION=4.2.1
-
 # Configure user.bazelrc with remote build caching options
 cp .kokoro/remote_cache.bazelrc user.bazelrc
-echo "build --remote_default_exec_properties=cache-silo-key=macos" >> user.bazelrc
+echo "build --remote_default_exec_properties=cache-silo-key=${KOKORO_JOB_NAME}" \
+  >> user.bazelrc
+echo "test --test_env=GOOGLE_APPLICATION_CREDENTIALS" >> user.bazelrc
 
 # Ensure that bazel is shut down, and build outputs and test logs
 # are uploaded even on failure.
@@ -61,18 +61,28 @@ _finish() {
     cp "${PROJECT_ROOT}/bazel-bin/kmsp11/main/libkmsp11.so" \
       "${RESULTS_DIR}/libkmsp11.dylib"
   fi
+  if [ -e "${PROJECT_ROOT}/bazel-bin/kmsp11/test/e2e/e2e_test" ]; then
+    cp "${PROJECT_ROOT}/bazel-bin/kmsp11/test/e2e/e2e_test" \
+      "${RESULTS_DIR}/libkmsp11_e2e_test"
+  fi
 
   cp "${PROJECT_ROOT}/LICENSE" "${RESULTS_DIR}"
-  cp "${PROJECT_ROOT}/NOTICE" "${RESULTS_DIR}"
 
   python3 "${PROJECT_ROOT}/.kokoro/copy_test_outputs.py" \
     "${PROJECT_ROOT}/bazel-testlogs" "${RESULTS_DIR}/testlogs"
 }
 trap _finish EXIT
 
+# Use Developer Tools for macOS 12.0.
+# go/kokoro/development/macos_big_sur_config.md#command-line-tools
+sudo xcode-select -s /Applications/Xcode_12.5.1.app
+
+# Ensure Bazel version information is included in the build log
+bazelisk version
+
 export BAZEL_ARGS="-c opt --keep_going ${BAZEL_EXTRA_ARGS}"
 
-bazelisk test ${BAZEL_ARGS} ... :release_tests
+bazelisk test ${BAZEL_ARGS} ... :ci_only_tests
 
 bazelisk run ${BAZEL_ARGS} //kmsp11/tools/buildsigner -- \
   -signing_key=${BUILD_SIGNING_KEY} \

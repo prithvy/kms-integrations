@@ -14,17 +14,17 @@
 
 #include "kmsp11/operation/rsaes_oaep.h"
 
+#include "common/kms_client.h"
+#include "common/test/runfiles.h"
+#include "common/test/test_status_macros.h"
 #include "fakekms/cpp/fakekms.h"
 #include "gmock/gmock.h"
 #include "kmsp11/object.h"
 #include "kmsp11/test/matchers.h"
 #include "kmsp11/test/resource_helpers.h"
-#include "kmsp11/test/runfiles.h"
-#include "kmsp11/test/test_status_macros.h"
 #include "kmsp11/util/crypto_utils.h"
-#include "kmsp11/util/kms_client.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 CK_RSA_PKCS_OAEP_PARAMS NewOaepParams() {
@@ -55,7 +55,7 @@ TEST(NewOaepDecrypterTest, Success) {
   CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_OK(RsaOaepDecrypter::New(key, &mechanism));
+  EXPECT_OK(NewRsaOaepDecrypter(key, &mechanism));
 }
 
 TEST(NewOaepDecrypterTest, SuccessSourceIsZero) {
@@ -69,7 +69,7 @@ TEST(NewOaepDecrypterTest, SuccessSourceIsZero) {
   params.source = 0;
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_OK(RsaOaepDecrypter::New(key, &mechanism));
+  EXPECT_OK(NewRsaOaepDecrypter(key, &mechanism));
 }
 
 TEST(NewOaepDecrypterTest, FailureWrongKeyType) {
@@ -81,7 +81,7 @@ TEST(NewOaepDecrypterTest, FailureWrongKeyType) {
   CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_KEY_TYPE_INCONSISTENT));
 }
 
@@ -95,7 +95,7 @@ TEST(NewOaepDecrypterTest, FailureWrongObjectClass) {
   CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_KEY_FUNCTION_NOT_PERMITTED));
 }
 
@@ -109,7 +109,7 @@ TEST(NewOaepDecrypterTest, FailureMechanismNotAllowed) {
   CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_KEY_FUNCTION_NOT_PERMITTED));
 }
 
@@ -126,7 +126,7 @@ TEST(NewOaepDecrypterTest, FailureNoParameters) {
       0,                  // ulParameterLen
   };
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -141,7 +141,7 @@ TEST(NewOaepDecrypterTest, FailureWrongHashAlgorithm) {
   params.hashAlg = CKM_SHA_1;
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -156,7 +156,7 @@ TEST(NewOaepDecrypterTest, FailureWrongMgf) {
   params.mgf = CKG_MGF1_SHA384;
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -171,7 +171,7 @@ TEST(NewOaepDecrypterTest, FailureSourceUnknown) {
   params.source = 2;
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -189,7 +189,7 @@ TEST(NewOaepDecrypterTest, FailureLabelSpecified) {
   params.ulSourceDataLen = sizeof(label);
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -203,7 +203,7 @@ TEST(NewOaepEncrypterTest, Success) {
   CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_OK(RsaOaepEncrypter::New(key, &mechanism));
+  EXPECT_OK(NewRsaOaepEncrypter(key, &mechanism));
 }
 
 TEST(NewOaepEncrypterTest, SuccessSourceIsZero) {
@@ -217,7 +217,7 @@ TEST(NewOaepEncrypterTest, SuccessSourceIsZero) {
   params.source = 0;
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_OK(RsaOaepEncrypter::New(key, &mechanism));
+  EXPECT_OK(NewRsaOaepEncrypter(key, &mechanism));
 }
 
 TEST(NewOaepEncrypterTest, FailureWrongKeyType) {
@@ -229,7 +229,7 @@ TEST(NewOaepEncrypterTest, FailureWrongKeyType) {
   CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepEncrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepEncrypter(key, &mechanism),
               StatusRvIs(CKR_KEY_TYPE_INCONSISTENT));
 }
 
@@ -243,7 +243,7 @@ TEST(NewOaepEncrypterTest, FailureWrongObjectClass) {
   CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepEncrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepEncrypter(key, &mechanism),
               StatusRvIs(CKR_KEY_FUNCTION_NOT_PERMITTED));
 }
 
@@ -257,7 +257,7 @@ TEST(NewOaepEncrypterTest, FailureMechanismNotAllowed) {
   CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepEncrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepEncrypter(key, &mechanism),
               StatusRvIs(CKR_KEY_FUNCTION_NOT_PERMITTED));
 }
 
@@ -274,7 +274,7 @@ TEST(NewOaepEncrypterTest, FailureNoParameters) {
       0,                  // ulParameterLen
   };
 
-  EXPECT_THAT(RsaOaepEncrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepEncrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -289,7 +289,7 @@ TEST(NewOaepEncrypterTest, FailureWrongHashAlgorithm) {
   params.hashAlg = CKM_SHA_1;
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepEncrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepEncrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -304,7 +304,7 @@ TEST(NewOaepEncrypterTest, FailureWrongMgf) {
   params.mgf = CKG_MGF1_SHA384;
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepEncrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepEncrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -319,7 +319,7 @@ TEST(NewOaepEncrypterTest, FailureSourceUnknown) {
   params.source = 2;
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepEncrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepEncrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -337,7 +337,7 @@ TEST(NewOaepEncrypterTest, FailureLabelSpecified) {
   params.ulSourceDataLen = sizeof(label);
   CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-  EXPECT_THAT(RsaOaepDecrypter::New(key, &mechanism),
+  EXPECT_THAT(NewRsaOaepDecrypter(key, &mechanism),
               StatusRvIs(CKR_MECHANISM_PARAM_INVALID));
 }
 
@@ -345,9 +345,10 @@ class OaepCryptTest : public testing::Test {
  protected:
   void SetUp() override {
     ASSERT_OK_AND_ASSIGN(fake_server_, fakekms::Server::New());
-    client_ = std::make_unique<KmsClient>(fake_server_->listen_addr(),
-                                           grpc::InsecureChannelCredentials(),
-                                           absl::Seconds(1));
+    client_ = std::make_unique<KmsClient>(KmsClient::Options{
+        .endpoint_address = fake_server_->listen_addr(),
+        .rpc_timeout = absl::Seconds(1),
+    });
 
     auto fake_client = fake_server_->NewClient();
 
@@ -366,7 +367,7 @@ class OaepCryptTest : public testing::Test {
 
     kms_key_name_ = ckv.name();
 
-    kms_v1::PublicKey pub_proto = GetPublicKey(fake_client.get(), ckv);
+    kms_v1::PublicKey pub_proto = GetPublicKeyOrDie(fake_client.get(), ckv);
     ASSERT_OK_AND_ASSIGN(public_key_, ParseX509PublicKeyPem(pub_proto.pem()));
 
     ASSERT_OK_AND_ASSIGN(KeyPair kp,
@@ -377,8 +378,8 @@ class OaepCryptTest : public testing::Test {
     CK_RSA_PKCS_OAEP_PARAMS params = NewOaepParams();
     CK_MECHANISM mechanism = NewOaepMechanism(&params);
 
-    ASSERT_OK_AND_ASSIGN(encrypter_, RsaOaepEncrypter::New(pub, &mechanism));
-    ASSERT_OK_AND_ASSIGN(decrypter_, RsaOaepDecrypter::New(prv, &mechanism));
+    ASSERT_OK_AND_ASSIGN(encrypter_, NewRsaOaepEncrypter(pub, &mechanism));
+    ASSERT_OK_AND_ASSIGN(decrypter_, NewRsaOaepDecrypter(prv, &mechanism));
   }
 
   std::unique_ptr<fakekms::Server> fake_server_;
@@ -435,46 +436,21 @@ TEST_F(OaepCryptTest, DecryptFailureKeyDisabled) {
               StatusRvIs(CKR_DEVICE_ERROR));
 }
 
-TEST_F(OaepCryptTest, DecryptUsesCache) {
-  std::vector<uint8_t> plaintext = {0xCA, 0xFE, 0xFE, 0xED};
-  uint8_t ciphertext[256];
+TEST_F(OaepCryptTest, DecryptReturnsCorrectResultOnCiphertextChange) {
+  std::vector<uint8_t> plaintext1 = {0xCA, 0xFE, 0xFE, 0xED};
+  std::vector<uint8_t> plaintext2 = {0xDE, 0xAD, 0xBE, 0xEF};
 
-  EXPECT_OK(EncryptRsaOaep(public_key_.get(), EVP_sha256(), plaintext,
-                           absl::MakeSpan(ciphertext)));
+  uint8_t ciphertext1[256], ciphertext2[256];
+  EXPECT_OK(
+      EncryptRsaOaep(public_key_.get(), EVP_sha256(), plaintext1, ciphertext1));
+  EXPECT_OK(
+      EncryptRsaOaep(public_key_.get(), EVP_sha256(), plaintext2, ciphertext2));
 
-  EXPECT_OK(decrypter_->Decrypt(client_.get(), ciphertext));
-
-  // Disable the underlying key, as proof that we didn't call KMS a second time.
-  kms_v1::CryptoKeyVersion ckv;
-  ckv.set_name(kms_key_name_);
-  ckv.set_state(kms_v1::CryptoKeyVersion::DISABLED);
-
-  google::protobuf::FieldMask update_mask;
-  update_mask.add_paths("state");
-
-  UpdateCryptoKeyVersionOrDie(fake_server_->NewClient().get(), ckv,
-                              update_mask);
-
-  ASSERT_OK_AND_ASSIGN(absl::Span<const uint8_t> recovered_plaintext,
-                       decrypter_->Decrypt(client_.get(), ciphertext));
-
-  EXPECT_EQ(recovered_plaintext, plaintext);
-}
-
-TEST_F(OaepCryptTest, DecryptSkipsCacheOnCiphertextChange) {
-  std::vector<uint8_t> plaintext = {0xCA, 0xFE, 0xFE, 0xED};
-  uint8_t ciphertext[256];
-
-  EXPECT_OK(EncryptRsaOaep(public_key_.get(), EVP_sha256(), plaintext,
-                           absl::MakeSpan(ciphertext)));
-
-  EXPECT_OK(decrypter_->Decrypt(client_.get(), ciphertext));
-
-  // Ensure that we get a different result when ciphertext changes.
-  RAND_bytes(ciphertext, sizeof(ciphertext));
-  EXPECT_THAT(decrypter_->Decrypt(client_.get(), ciphertext),
-              StatusRvIs(CKR_ENCRYPTED_DATA_INVALID));
+  EXPECT_THAT(decrypter_->Decrypt(client_.get(), ciphertext1),
+              IsOkAndHolds(plaintext1));
+  EXPECT_THAT(decrypter_->Decrypt(client_.get(), ciphertext2),
+              IsOkAndHolds(plaintext2));
 }
 
 }  // namespace
-}  // namespace kmsp11
+}  // namespace cloud_kms::kmsp11

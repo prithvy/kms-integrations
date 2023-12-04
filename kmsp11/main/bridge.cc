@@ -14,21 +14,21 @@
 
 #include "absl/status/status.h"
 #include "absl/types/optional.h"
+#include "common/status_macros.h"
 #include "glog/logging.h"
-#include "grpc/fork.h"
 #include "kmsp11/config/config.h"
 #include "kmsp11/cryptoki.h"
 #include "kmsp11/kmsp11.h"
+#include "kmsp11/main/fork_support.h"
 #include "kmsp11/main/function_list.h"
-#include "kmsp11/mechanism.h"
 #include "kmsp11/provider.h"
 #include "kmsp11/util/crypto_utils.h"
 #include "kmsp11/util/errors.h"
 #include "kmsp11/util/global_provider.h"
 #include "kmsp11/util/logging.h"
-#include "kmsp11/util/status_macros.h"
+#include "kmsp11/util/status_utils.h"
 
-namespace kmsp11 {
+namespace cloud_kms::kmsp11 {
 namespace {
 
 constexpr CK_FUNCTION_LIST kFunctionList = NewFunctionList();
@@ -52,13 +52,6 @@ absl::StatusOr<std::shared_ptr<Session>> GetSession(
   return provider->GetSession(session_handle);
 }
 
-absl::Status ShutdownInternal() {
-  RETURN_IF_ERROR(ReleaseGlobalProvider());
-  grpc_shutdown_blocking();
-  ShutdownLogging();
-  return absl::OkStatus();
-}
-
 }  // namespace
 
 // Initialize the library.
@@ -66,7 +59,9 @@ absl::Status ShutdownInternal() {
 absl::Status Initialize(CK_VOID_PTR pInitArgs) {
   auto* init_args = static_cast<CK_C_INITIALIZE_ARGS*>(pInitArgs);
   if (init_args) {
-    if ((init_args->flags & CKF_OS_LOCKING_OK) != CKF_OS_LOCKING_OK) {
+    if ((init_args->flags & CKF_OS_LOCKING_OK) != CKF_OS_LOCKING_OK &&
+        (init_args->CreateMutex || init_args->DestroyMutex ||
+         init_args->LockMutex || init_args->UnlockMutex)) {
       return NewInvalidArgumentError("library requires os locking",
                                      CKR_CANT_LOCK, SOURCE_LOCATION);
     }
@@ -76,23 +71,6 @@ absl::Status Initialize(CK_VOID_PTR pInitArgs) {
                                      CKR_NEED_TO_CREATE_THREADS,
                                      SOURCE_LOCATION);
     }
-  }
-
-  Provider* existing_provider = GetGlobalProvider();
-  if (existing_provider) {
-    if (existing_provider->creation_process_id() == GetProcessId()) {
-      return FailedPreconditionError("the library is already initialized",
-                                     CKR_CRYPTOKI_ALREADY_INITIALIZED,
-                                     SOURCE_LOCATION);
-    }
-
-    // The PID has changed, which means this is Cryptoki re-Initialization in a
-    // post-fork child, which is expected behavior:
-    // http://docs.oasis-open.org/pkcs11/pkcs11-ug/v2.40/cn02/pkcs11-ug-v2.40-cn02.html#_Toc406759987
-    //
-    // For now, we support this by releasing all of our existing state, and
-    // starting over from scratch. This could be optimized.
-    RETURN_IF_ERROR(ShutdownInternal());
   }
 
   LibraryConfig config;
@@ -107,22 +85,30 @@ absl::Status Initialize(CK_VOID_PTR pInitArgs) {
     ASSIGN_OR_RETURN(config, LoadConfigFromEnvironment());
   }
 
+  // Registering fork handlers is a one-time operation.
+  if (!config.skip_fork_handlers()) {
+    static const absl::Status kForkHandlersRegistered = RegisterForkHandlers();
+    RETURN_IF_ERROR(kForkHandlersRegistered);
+  }
+
+  Provider* existing_provider = GetGlobalProvider();
+  if (existing_provider) {
+    return FailedPreconditionError("the library is already initialized",
+                                   CKR_CRYPTOKI_ALREADY_INITIALIZED,
+                                   SOURCE_LOCATION);
+  }
+
   CHECK(kCryptoLibraryInitialized);
   if (config.require_fips_mode()) {
     absl::Status self_test_result = CheckFipsSelfTest();
     CHECK(self_test_result.ok()) << "FIPS tests failed: " << self_test_result;
   }
 
-  // grpc_init() emits log messages when GRPC_VERBOSITY is debug, and
   // Provider::New emits info log messages (for example, noting that a CKV is
   // being skipped due to state DISABLED), so logging should be initialized
-  // before either of these is invoked.
+  // before it is invoked.
   RETURN_IF_ERROR(
       InitializeLogging(config.log_directory(), config.log_filename_suffix()));
-
-  // Initialize gRPC state.
-  grpc_init();
-  grpc_fork_handlers_auto_register();
 
   absl::StatusOr<std::unique_ptr<Provider>> new_provider =
       Provider::New(config);
@@ -138,7 +124,8 @@ absl::Status Initialize(CK_VOID_PTR pInitArgs) {
 // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc383864872
 absl::Status Finalize(CK_VOID_PTR pReserved) {
   RETURN_IF_ERROR(GetProvider());
-  RETURN_IF_ERROR(ShutdownInternal());
+  RETURN_IF_ERROR(ReleaseGlobalProvider());
+  ShutdownLogging();
   return absl::OkStatus();
 }
 
@@ -254,6 +241,13 @@ absl::Status CloseSession(CK_SESSION_HANDLE hSession) {
   return provider->CloseSession(hSession);
 }
 
+// Close all sessions between an application and a token.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc235002339
+absl::Status CloseAllSessions(CK_SLOT_ID slotID) {
+  ASSIGN_OR_RETURN(Provider * provider, GetProvider());
+  return provider->CloseAllSessions(slotID);
+}
+
 // Get information about a session.
 // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc235002340
 absl::Status GetSessionInfo(CK_SESSION_HANDLE hSession,
@@ -294,12 +288,13 @@ absl::Status Logout(CK_SESSION_HANDLE hSession) {
 absl::Status GetMechanismList(CK_SLOT_ID slotID,
                               CK_MECHANISM_TYPE_PTR pMechanismList,
                               CK_ULONG_PTR pulCount) {
+  ASSIGN_OR_RETURN(Provider * provider, GetProvider());
   RETURN_IF_ERROR(GetToken(slotID).status());  // ensure slotID is valid
   if (!pulCount) {
     return NullArgumentError("pulCount", SOURCE_LOCATION);
   }
 
-  absl::Span<const CK_MECHANISM_TYPE> types = Mechanisms();
+  absl::Span<const CK_MECHANISM_TYPE> types = provider->Mechanisms();
 
   if (!pMechanismList) {
     *pulCount = types.size();
@@ -326,11 +321,12 @@ absl::Status GetMechanismList(CK_SLOT_ID slotID,
 // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc235002332
 absl::Status GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type,
                               CK_MECHANISM_INFO_PTR pInfo) {
+  ASSIGN_OR_RETURN(Provider * provider, GetProvider());
   RETURN_IF_ERROR(GetToken(slotID).status());  // ensure slotID is valid
   if (!pInfo) {
     return NullArgumentError("pInfo", SOURCE_LOCATION);
   }
-  ASSIGN_OR_RETURN(*pInfo, MechanismInfo(type));
+  ASSIGN_OR_RETURN(*pInfo, provider->MechanismInfo(type));
   return absl::OkStatus();
 }
 
@@ -446,33 +442,106 @@ absl::Status Decrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pEncryptedData,
                      CK_ULONG_PTR pulDataLen) {
   ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
   if (!pEncryptedData) {
+    session->ReleaseOperation();
     return NullArgumentError("pEncryptedData", SOURCE_LOCATION);
   }
   if (!pulDataLen) {
+    session->ReleaseOperation();
     return NullArgumentError("pulDataLen", SOURCE_LOCATION);
   }
 
-  ASSIGN_OR_RETURN(absl::Span<const uint8_t> plaintext,
-                   session->Decrypt(absl::MakeConstSpan(pEncryptedData,
-                                                        ulEncryptedDataLen)));
+  absl::StatusOr<absl::Span<const uint8_t>> plaintext =
+      session->Decrypt(absl::MakeConstSpan(pEncryptedData, ulEncryptedDataLen));
+  if (!plaintext.ok()) {
+    session->ReleaseOperation();
+    return plaintext.status();
+  }
 
   if (!pData) {
-    *pulDataLen = plaintext.size();
+    *pulDataLen = plaintext->size();
     return absl::OkStatus();
   }
 
-  if (*pulDataLen < plaintext.size()) {
+  if (*pulDataLen < plaintext->size()) {
     absl::Status result = OutOfRangeError(
         absl::StrFormat(
             "plaintext of length %d cannot fit in buffer of length %d",
-            plaintext.size(), *pulDataLen),
+            plaintext->size(), *pulDataLen),
         SOURCE_LOCATION);
-    *pulDataLen = plaintext.size();
+    *pulDataLen = plaintext->size();
     return result;
   }
 
-  std::copy(plaintext.begin(), plaintext.end(), pData);
-  *pulDataLen = plaintext.size();
+  std::copy(plaintext->begin(), plaintext->end(), pData);
+  *pulDataLen = plaintext->size();
+
+  session->ReleaseOperation();
+  return absl::OkStatus();
+}
+
+// Continue a multi-part encrypt operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc385057935
+absl::Status DecryptUpdate(CK_SESSION_HANDLE hSession,
+                           CK_BYTE_PTR pEncryptedPart,
+                           CK_ULONG ulEncryptedPartLen, CK_BYTE_PTR pPart,
+                           CK_ULONG_PTR pulPartLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pEncryptedPart) {
+    session->ReleaseOperation();
+    return NullArgumentError("pEncryptedPart", SOURCE_LOCATION);
+  }
+  if (!pulPartLen) {
+    session->ReleaseOperation();
+    return NullArgumentError("pulPartLen", SOURCE_LOCATION);
+  }
+
+  absl::Status result = session->DecryptUpdate(
+      absl::MakeConstSpan(pEncryptedPart, ulEncryptedPartLen));
+
+  if (!result.ok()) {
+    session->ReleaseOperation();
+  }
+
+  // The library does not return partial decrypted plaintext, so we set the
+  // partial output length to 0.
+  *pulPartLen = 0;
+
+  return result;
+}
+
+// Complete a multi-part encrypt operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc323024136
+absl::Status DecryptFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pLastPart,
+                          CK_ULONG_PTR pulLastPartLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pulLastPartLen) {
+    session->ReleaseOperation();
+    return NullArgumentError("pulLastPartLen", SOURCE_LOCATION);
+  }
+
+  absl::StatusOr<absl::Span<const uint8_t>> plaintext = session->DecryptFinal();
+  if (!plaintext.ok()) {
+    session->ReleaseOperation();
+    return plaintext.status();
+  }
+
+  if (!pLastPart) {
+    *pulLastPartLen = plaintext->size();
+    return absl::OkStatus();
+  }
+
+  if (*pulLastPartLen < plaintext->size()) {
+    absl::Status result = OutOfRangeError(
+        absl::StrFormat(
+            "plaintext of length %d cannot fit in buffer of length %d",
+            plaintext->size(), *pulLastPartLen),
+        SOURCE_LOCATION);
+    *pulLastPartLen = plaintext->size();
+    return result;
+  }
+
+  std::copy(plaintext->begin(), plaintext->end(), pLastPart);
+  *pulLastPartLen = plaintext->size();
 
   session->ReleaseOperation();
   return absl::OkStatus();
@@ -498,38 +567,113 @@ absl::Status Encrypt(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                      CK_ULONG_PTR pulEncryptedDataLen) {
   ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
   if (!pData) {
+    session->ReleaseOperation();
     return NullArgumentError("pData", SOURCE_LOCATION);
   }
   if (!pulEncryptedDataLen) {
+    session->ReleaseOperation();
     return NullArgumentError("pulEncryptedDataLen", SOURCE_LOCATION);
   }
 
-  ASSIGN_OR_RETURN(absl::Span<const uint8_t> ciphertext,
-                   session->Encrypt(absl::MakeConstSpan(pData, ulDataLen)));
+  absl::StatusOr<absl::Span<const uint8_t>> ciphertext =
+      session->Encrypt(absl::MakeConstSpan(pData, ulDataLen));
+  if (!ciphertext.ok()) {
+    session->ReleaseOperation();
+    return ciphertext.status();
+  }
 
   if (!pEncryptedData) {
-    *pulEncryptedDataLen = ciphertext.size();
+    *pulEncryptedDataLen = ciphertext->size();
     return absl::OkStatus();
   }
 
-  if (*pulEncryptedDataLen < ciphertext.size()) {
+  if (*pulEncryptedDataLen < ciphertext->size()) {
     absl::Status result = OutOfRangeError(
         absl::StrFormat(
             "ciphertext of length %d cannot fit in buffer of length %d",
-            ciphertext.size(), *pulEncryptedDataLen),
+            ciphertext->size(), *pulEncryptedDataLen),
         SOURCE_LOCATION);
-    *pulEncryptedDataLen = ciphertext.size();
+    *pulEncryptedDataLen = ciphertext->size();
     return result;
   }
 
-  std::copy(ciphertext.begin(), ciphertext.end(), pEncryptedData);
-  *pulEncryptedDataLen = ciphertext.size();
+  std::copy(ciphertext->begin(), ciphertext->end(), pEncryptedData);
+  *pulEncryptedDataLen = ciphertext->size();
 
   session->ReleaseOperation();
   return absl::OkStatus();
 }
 
-// Begin a sign operation.
+// Continue a multi-part encrypt operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc323024131
+absl::Status EncryptUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
+                           CK_ULONG ulPartLen, CK_BYTE_PTR pEncryptedPart,
+                           CK_ULONG_PTR pulEncryptedPartLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pPart) {
+    session->ReleaseOperation();
+    return NullArgumentError("pPart", SOURCE_LOCATION);
+  }
+  if (!pulEncryptedPartLen) {
+    session->ReleaseOperation();
+    return NullArgumentError("pulEncryptedPartLen", SOURCE_LOCATION);
+  }
+
+  absl::Status result =
+      session->EncryptUpdate(absl::MakeConstSpan(pPart, ulPartLen));
+
+  if (!result.ok()) {
+    session->ReleaseOperation();
+  }
+
+  // The library does not return partial encrypted ciphertext, so we set the
+  // partial output length to 0.
+  *pulEncryptedPartLen = 0;
+
+  return result;
+}
+
+// Complete a multi-part encrypt operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc323024132
+absl::Status EncryptFinal(CK_SESSION_HANDLE hSession,
+                          CK_BYTE_PTR pLastEncryptedPart,
+                          CK_ULONG_PTR pulLastEncryptedPartLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pulLastEncryptedPartLen) {
+    session->ReleaseOperation();
+    return NullArgumentError("pulLastEncryptedPartLen", SOURCE_LOCATION);
+  }
+
+  absl::StatusOr<absl::Span<const uint8_t>> ciphertext =
+      session->EncryptFinal();
+  if (!ciphertext.ok()) {
+    session->ReleaseOperation();
+    return ciphertext.status();
+  }
+
+  if (!pLastEncryptedPart) {
+    *pulLastEncryptedPartLen = ciphertext->size();
+    return absl::OkStatus();
+  }
+
+  if (*pulLastEncryptedPartLen < ciphertext->size()) {
+    absl::Status result = OutOfRangeError(
+        absl::StrFormat(
+            "ciphertext of length %d cannot fit in buffer of length %d",
+            ciphertext->size(), *pulLastEncryptedPartLen),
+        SOURCE_LOCATION);
+    *pulLastEncryptedPartLen = ciphertext->size();
+    return result;
+  }
+
+  std::copy(ciphertext->begin(), ciphertext->end(), pLastEncryptedPart);
+  *pulLastEncryptedPartLen = ciphertext->size();
+
+  session->ReleaseOperation();
+  return absl::OkStatus();
+}
+
+// Begin a single-part or multi-part sign operation.
 // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc235002372
 absl::Status SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                       CK_OBJECT_HANDLE hKey) {
@@ -542,46 +686,111 @@ absl::Status SignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   return session->SignInit(key, pMechanism);
 }
 
-// Complete a sign operation.
+// Complete a single-part sign operation.
 // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc235002373
 absl::Status Sign(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                   CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
                   CK_ULONG_PTR pulSignatureLen) {
   ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
   if (!pData) {
+    session->ReleaseOperation();
     return NullArgumentError("pData", SOURCE_LOCATION);
   }
   if (!pulSignatureLen) {
+    session->ReleaseOperation();
     return NullArgumentError("pulSignatureLen", SOURCE_LOCATION);
   }
 
-  ASSIGN_OR_RETURN(size_t sig_length, session->SignatureLength());
+  absl::StatusOr<size_t> sig_length = session->SignatureLength();
+  if (!sig_length.ok()) {
+    session->ReleaseOperation();
+    return sig_length.status();
+  }
 
   if (!pSignature) {
-    *pulSignatureLen = sig_length;
+    *pulSignatureLen = *sig_length;
     return absl::OkStatus();
   }
 
-  if (*pulSignatureLen < sig_length) {
+  if (*pulSignatureLen < *sig_length) {
     absl::Status result = OutOfRangeError(
         absl::StrFormat(
             "signature of length %d cannot fit in buffer of length %d",
-            sig_length, *pulSignatureLen),
+            *sig_length, *pulSignatureLen),
         SOURCE_LOCATION);
-    *pulSignatureLen = sig_length;
+    *pulSignatureLen = *sig_length;
     return result;
   }
 
   absl::Status result = session->Sign(absl::MakeConstSpan(pData, ulDataLen),
-                                      absl::MakeSpan(pSignature, sig_length));
+                                      absl::MakeSpan(pSignature, *sig_length));
   session->ReleaseOperation();
   if (result.ok()) {
-    *pulSignatureLen = sig_length;
+    *pulSignatureLen = *sig_length;
   }
   return result;
 }
 
-// Begin a verify operation.
+// Continue a multi-part sign operation.
+// https://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc323024145
+absl::Status SignUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
+                        CK_ULONG ulPartLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pPart) {
+    session->ReleaseOperation();
+    return NullArgumentError("pData", SOURCE_LOCATION);
+  }
+
+  absl::Status result =
+      session->SignUpdate(absl::MakeConstSpan(pPart, ulPartLen));
+
+  if (!result.ok()) {
+    session->ReleaseOperation();
+  }
+  return result;
+}
+
+// Complete a multi-part sign operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc323024146
+absl::Status SignFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
+                       CK_ULONG_PTR pulSignatureLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pulSignatureLen) {
+    session->ReleaseOperation();
+    return NullArgumentError("pulSignatureLen", SOURCE_LOCATION);
+  }
+
+  absl::StatusOr<size_t> sig_length = session->SignatureLength();
+  if (!sig_length.ok()) {
+    session->ReleaseOperation();
+    return sig_length.status();
+  }
+
+  if (!pSignature) {
+    *pulSignatureLen = *sig_length;
+    return absl::OkStatus();
+  }
+
+  if (*pulSignatureLen < *sig_length) {
+    absl::Status result = OutOfRangeError(
+        absl::StrFormat(
+            "signature of length %d cannot fit in buffer of length %d",
+            *sig_length, *pulSignatureLen),
+        SOURCE_LOCATION);
+    *pulSignatureLen = *sig_length;
+    return result;
+  }
+
+  absl::Status result =
+      session->SignFinal(absl::MakeSpan(pSignature, *sig_length));
+  session->ReleaseOperation();
+  if (result.ok()) {
+    *pulSignatureLen = *sig_length;
+  }
+  return result;
+}
+
+// Begin a single-part or multi-part verify operation.
 // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc235002379
 absl::Status VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
                         CK_OBJECT_HANDLE hKey) {
@@ -594,16 +803,18 @@ absl::Status VerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism,
   return session->VerifyInit(key, pMechanism);
 }
 
-// Complete a verify operation.
+// Complete a single-part verify operation.
 // http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc235002380
 absl::Status Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                     CK_ULONG ulDataLen, CK_BYTE_PTR pSignature,
                     CK_ULONG ulSignatureLen) {
   ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
   if (!pData) {
+    session->ReleaseOperation();
     return NullArgumentError("pData", SOURCE_LOCATION);
   }
   if (!pSignature) {
+    session->ReleaseOperation();
     return NullArgumentError("pSignature", SOURCE_LOCATION);
   }
 
@@ -612,6 +823,75 @@ absl::Status Verify(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pData,
                       absl::MakeConstSpan(pSignature, ulSignatureLen));
   session->ReleaseOperation();
   return result;
+}
+
+// Continue a multi-part verify operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc323024151
+absl::Status VerifyUpdate(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pPart,
+                          CK_ULONG ulPartLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pPart) {
+    session->ReleaseOperation();
+    return NullArgumentError("pData", SOURCE_LOCATION);
+  }
+
+  absl::Status result =
+      session->VerifyUpdate(absl::MakeConstSpan(pPart, ulPartLen));
+
+  if (!result.ok()) {
+    session->ReleaseOperation();
+  }
+  return result;
+}
+
+// Complete a multi-part verify operation.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/pkcs11-base-v2.40.html#_Toc323024152
+absl::Status VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
+                         CK_ULONG ulSignatureLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pSignature) {
+    session->ReleaseOperation();
+    return NullArgumentError("pSignature", SOURCE_LOCATION);
+  }
+
+  absl::Status result =
+      session->VerifyFinal(absl::MakeConstSpan(pSignature, ulSignatureLen));
+  session->ReleaseOperation();
+  return result;
+}
+
+// Generate a new secret key.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/os/pkcs11-base-v2.40-os.html#_Toc323024156
+absl::Status GenerateKey(CK_SESSION_HANDLE hSession,
+                         CK_MECHANISM_PTR pMechanism,
+                         CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount,
+                         CK_OBJECT_HANDLE_PTR phKey) {
+  ASSIGN_OR_RETURN(Provider * provider, GetProvider());
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+
+  if (!pMechanism) {
+    return NullArgumentError("pMechanism", SOURCE_LOCATION);
+  }
+  if (!phKey) {
+    return NullArgumentError("phKey", SOURCE_LOCATION);
+  }
+
+  absl::Span<const CK_ATTRIBUTE> attributes;
+  if (ulCount > 0) {
+    if (!pTemplate) {
+      return NullArgumentError("pTemplate", SOURCE_LOCATION);
+    }
+    attributes = absl::MakeConstSpan(pTemplate, ulCount);
+  }
+
+  ASSIGN_OR_RETURN(
+      CK_OBJECT_HANDLE handle,
+      session->GenerateKey(
+          *pMechanism, attributes,
+          provider->library_config().experimental_create_multiple_versions()));
+
+  *phKey = handle;
+  return absl::OkStatus();
 }
 
 // Generate a new asymmetric key pair.
@@ -671,4 +951,15 @@ absl::Status DestroyObject(CK_SESSION_HANDLE hSession,
   return session->DestroyObject(object);
 }
 
-}  // namespace kmsp11
+// Retrieve HSM randomness.
+// http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/errata01/os/pkcs11-base-v2.40-errata01-os-complete.html#_Toc323024163
+absl::Status GenerateRandom(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pRandomData,
+                            CK_ULONG ulRandomLen) {
+  ASSIGN_OR_RETURN(std::shared_ptr<Session> session, GetSession(hSession));
+  if (!pRandomData) {
+    return NullArgumentError("pRandomData", SOURCE_LOCATION);
+  }
+  return session->GenerateRandom(absl::MakeSpan(pRandomData, ulRandomLen));
+}
+
+}  // namespace cloud_kms::kmsp11

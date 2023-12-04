@@ -14,13 +14,15 @@
     5.  [RSA-PKCS1 signing and verification](#rsa-pkcs1-signing-and-verification)
     6.  [RSA-PSS signing and verification](#rsa-pss-signing-and-verification)
 6.  [Limitations](#limitations)
-7.  [Release Notes](#release-notes)
 
 ## Getting started
 
 This library provides access to Google Cloud HSM through the industry standard
 PKCS #11 API. Official Google-built releases of this library are covered by the
 [Google Cloud Platform Terms of Service][gcp-service-terms].
+
+If you are upgrading from a previous version of the library, be sure to check
+the [change log](../../CHANGELOG.md) for changes that might affect your usage.
 
 ### Linux system requirements
 
@@ -34,8 +36,10 @@ compile the library yourself, and it does not require an installation routine.
 The library is built and tested on Windows Server (semi-annual channel), on the
 amd64 architecture. The library is designed to be compatible with Windows Server
 2012 R2, Windows 8.1 (x64), and all subsequent server and x64 desktop releases.
-The library requires the preinstallation of the Visual C++ 2019 x64
-Redistributable package, which can be downloaded [here][msvc-redistributable].
+
+On Windows versions prior to Windows 10, the library requires the
+preinstallation of the Visual C++ 2022 x64 Redistributable package (14.34 or
+higher), which can be downloaded [here][msvc-redistributable].
 
 ### Downloading and verifying the library
 
@@ -127,19 +131,20 @@ log_directory         | string | No       | None    | A directory where applicat
 log_filename_suffix   | string | No       | None    | A suffix that will be appended to application log file names.
 generate_certs        | bool   | No       | false   | Whether to generate certificates at runtime for asymmetric KMS keys. The certificates are regenerated each time the library is intiailized, and they do not chain to a public root of trust. They are intended to provide compatibility with the [Sun PKCS #11 JCA Provider][java-p11-guide] which requires that all private keys have an associated certificate. Other use is discouraged.
 require_fips_mode     | bool   | No       | false   | Whether to enable an initialization time check that requires that BoringSSL or OpenSSL have been built in FIPS mode, and that FIPS self checks pass.
+skip_fork_handlers    | bool   | No       | false   | Whether to skip fork handlers registration, for applications that don't need the PKCS#11 library to work in the child process.
 
 #### Experimental global configuration options
 
-Item Name                             | Type | Required | Default | Description
-------------------------------------- | ---- | -------- | ------- | -----------
-experimental_create_multiple_versions | bool | No       | false   | Enables an experiment that allows multiple versions of a CryptoKey to be created.
+Item Name                              | Type | Required | Default | Description
+-------------------------------------- | ---- | -------- | ------- | -----------
+experimental_create_multiple_versions  | bool | No       | false   | Enables an experiment that allows multiple versions of a CryptoKey to be created.
 
 ### Per token configuration
 
-Item Name | Type   | Required | Default | Description
---------- | ------ | -------- | ------- | -----------
-key_ring  | string | Yes      | None    | The full name of the KMS key ring whose keys will be made accessible.
-label     | string | No       | Empty   | The label to use for this token's `CK_TOKEN_INFO` structure. Setting a value here may help an application disambiguate tokens at runtime.
+--------- | --------------- | -------- | ------- | -----------
+key_ring  | string          | Yes      | None    | The full name of the KMS key ring whose keys will be made accessible.
+label     | string          | No       | Empty   | The label to use for this token's `CK_TOKEN_INFO` structure. Setting a value here may help an application disambiguate tokens at runtime.
+certs     | list of strings | No       | Empty   | Exposes the provided PEM X.509 certificate(s) alongside any KMS keys they match.
 
 ## Functions
 
@@ -166,7 +171,7 @@ Function                                         | Status | Notes
 [`C_SetPIN`][C_SetPIN]                           | ❌      |
 [`C_OpenSession`][C_OpenSession]                 | ✅      | The flag `CKF_SERIAL_SESSION` must be supplied. The library does not make callbacks, so the arguments `pApplication` and `Notify` are ignored.
 [`C_CloseSession`][C_CloseSession]               | ✅      |
-[`C_CloseAllSessions`][C_CloseAllSessions]       | ❌      |
+[`C_CloseAllSessions`][C_CloseAllSessions]       | ✅      |
 [`C_GetSessionInfo`][C_GetSessionInfo]           | ✅      |
 [`C_GetOperationState`][C_GetOperationState]     | ❌      |
 [`C_SetOperationState`][C_SetOperationState]     | ❌      |
@@ -183,12 +188,12 @@ Function                                         | Status | Notes
 [`C_FindObjectsFinal`][C_FindObjectsFinal]       | ✅      |
 [`C_EncryptInit`][C_EncryptInit]                 | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which encryption algorithms are supported.
 [`C_Encrypt`][C_Encrypt]                         | ✅      |
-[`C_EncryptUpdate`][C_EncryptUpdate]             | ❌      | None of the implemented mechanisms supports multi-part encryption.
-[`C_EncryptFinal`][C_EncryptFinal]               | ❌      |
+[`C_EncryptUpdate`][C_EncryptUpdate]             | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which encryption algorithms support multi-part encryption. See [other notes](#other-notes) for additional insights.
+[`C_EncryptFinal`][C_EncryptFinal]               | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which encryption algorithms support multi-part encryption. See [other notes](#other-notes) for additional insights.
 [`C_DecryptInit`][C_DecryptInit]                 | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which decryption algorithms are supported.
 [`C_Decrypt`][C_Decrypt]                         | ✅      |
-[`C_DecryptUpdate`][C_DecryptUpdate]             | ❌      | None of the implemented mechanisms supports multi-part decryption.
-[`C_DecryptFinal`][C_DecryptFinal]               | ❌      |
+[`C_DecryptUpdate`][C_DecryptUpdate]             | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which decryption algorithms support multi-part decryption. See [other notes](#other-notes) for additional insights.
+[`C_DecryptFinal`][C_DecryptFinal]               | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which decryption algorithms support multi-part decryption. See [other notes](#other-notes) for additional insights.
 [`C_DigestInit`][C_DigestInit]                   | ❌      |
 [`C_Digest`][C_Digest]                           | ❌      |
 [`C_DigestUpdate`][C_DigestUpdate]               | ❌      |
@@ -196,27 +201,27 @@ Function                                         | Status | Notes
 [`C_DigestFinal`][C_DigestFinal]                 | ❌      |
 [`C_SignInit`][C_SignInit]                       | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which signing algorithms are supported.
 [`C_Sign`][C_Sign]                               | ✅      |
-[`C_SignUpdate`][C_SignUpdate]                   | ❌      | None of the implemented mechanisms supports multi-part signing.
-[`C_SignFinal`][C_SignFinal]                     | ❌      |
+[`C_SignUpdate`][C_SignUpdate]                   | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which signing algorithms support  multi-part signing. See [other notes](#other-notes) for additional insights.
+[`C_SignFinal`][C_SignFinal]                     | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which signing algorithms support  multi-part signing. See [other notes](#other-notes) for additional insights.
 [`C_SignRecoverInit`][C_SignRecoverInit]         | ❌      |
 [`C_SignRecover`][C_SignRecover]                 | ❌      |
 [`C_VerifyInit`][C_VerifyInit]                   | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which verification algorithms are supported.
 [`C_Verify`][C_Verify]                           | ✅      |
-[`C_VerifyUpdate`][C_VerifyUpdate]               | ❌      | None of the implemented mechanisms supports multi-part verification.
-[`C_VerifyFinal`][C_VerifyFinal]                 | ❌      |
+[`C_VerifyUpdate`][C_VerifyUpdate]               | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which signing algorithms support  multi-part verification. See [other notes](#other-notes) for additional insights.
+[`C_VerifyFinal`][C_VerifyFinal]                 | ✅      | Consult the [cryptographic operations](#cryptographic-operations) documentation for details on which signing algorithms support  multi-part verification. See [other notes](#other-notes) for additional insights.
 [`C_VerifyRecoverInit`][C_VerifyRecoverInit]     | ❌      |
 [`C_VerifyRecover`][C_VerifyRecover]             | ❌      |
 [`C_DigestEncryptUpdate`][C_DigestEncryptUpdate] | ❌      |
 [`C_DecryptDigestUpdate`][C_DecryptDigestUpdate] | ❌      |
 [`C_SignEncryptUpdate`][C_SignEncryptUpdate]     | ❌      |
 [`C_DecryptVerifyUpdate`][C_DecryptVerifyUpdate] | ❌      |
-[`C_GenerateKey`][C_GenerateKey]                 | ❌      |
+[`C_GenerateKey`][C_GenerateKey]                 | ✅      | When using this function, the template must specify the attributes `CKA_LABEL` and `CKA_KMS_ALGORITHM`, and must not specify any other attributes. This function creates a Cloud KMS CryptoKey and a first version. This mechanism cannot be used to create additional versions in an existing CryptoKey, unless the `experimental_create_multiple_versions` option is enabled.
 [`C_GenerateKeyPair`][C_GenerateKeyPair]         | ✅      | When using this function, a public key template must not be specified. The private key template must specify the attributes `CKA_LABEL` and `CKA_KMS_ALGORITHM`, and must not specify any other attributes. This function creates a Cloud KMS CryptoKey and a first version. This mechanism cannot be used to create additional versions in an existing CryptoKey, unless the `experimental_create_multiple_versions` option is enabled.
 [`C_WrapKey`][C_WrapKey]                         | ❌      |
 [`C_UnwrapKey`][C_UnwrapKey]                     | ❌      |
 [`C_DeriveKey`][C_DeriveKey]                     | ❌      |
 [`C_SeedRandom`][C_SeedRandom]                   | ❌      |
-[`C_GenerateRandom`][C_GenerateRandom]           | ❌      |
+[`C_GenerateRandom`][C_GenerateRandom]           | ✅      | Retrieves between 8 and 1024 bytes of randomness from Cloud HSM.
 [`C_GetFunctionStatus`][C_GetFunctionStatus]     | ❌      |
 [`C_CancelFunction`][C_CancelFunction]           | ❌      |
 
@@ -238,13 +243,21 @@ Cloud KMS Algorithm           | [`EC_SIGN_P256_SHA256`][kms-ec-algorithms], [`EC
 ### ECDSA Signing and Verification
 
 The library may be used for ECDSA signing and verification. The expected input
-for a signing or verification operation is a message digest of the appropriate
-length for the Cloud KMS algorithm.
+for a signing or verification operation varies by mechanism, and is either a
+message digest of the appropriate length for the Cloud KMS algorithm, or plain
+input data.
 
 Compatibility                | Compatible With
 ---------------------------- | ---------------
 PKCS #11 Functions           | [`C_Sign`][C_Sign], [`C_Verify`][C_Verify]
-PKCS #11 Mechanism           | [`CKM_ECDSA`][CKM_ECDSA]
+PKCS #11 Mechanism           | [`CKM_ECDSA`][CKM_ECDSA], `CKM_ECDSA_SHA256`, `CKM_ECDSA_SHA384`
+PKCS #11 Mechanism Parameter | None
+Cloud KMS Algorithm          | [`EC_SIGN_P256_SHA256`][kms-ec-algorithms], [`EC_SIGN_P384_SHA384`][kms-ec-algorithms]
+
+Compatibility                | Compatible With
+---------------------------- | ---------------
+PKCS #11 Functions           | [`C_SignUpdate`][C_SignUpdate], [`C_SignFinal`][C_SignFinal], [`C_VerifyUpdate`][C_VerifyUpdate], [`C_VerifyFinal`][C_VerifyFinal]
+PKCS #11 Mechanism           | `CKM_ECDSA_SHA256`, `CKM_ECDSA_SHA384`
 PKCS #11 Mechanism Parameter | None
 Cloud KMS Algorithm          | [`EC_SIGN_P256_SHA256`][kms-ec-algorithms], [`EC_SIGN_P384_SHA384`][kms-ec-algorithms]
 
@@ -274,25 +287,35 @@ Cloud KMS Algorithm          | [`RSA_DECRYPT_OAEP_2048_SHA256`][kms-asymmetric-e
 
 ### RSA-PKCS1 Signing and Verification
 
-The library may be used for RSASSA-PKCS1 signing and verification.
+The library may be used for RSASSA-PKCS1 single-part or multi-part signing and
+verification.
 
 For Cloud KMS keys with an algorithm name that includes a digest type, the
-expected input for a signing or verification operation is a PKCS #1 DigestInfo
-with the appropriate digest algorithm. For Cloud KMS keys without a digest type
-("Raw PKCS#1" keys), arbitrary input is accepted.
+expected input for a signing or verification operation varies by mechanism and
+is either a PKCS #1 DigestInfo with the appropriate digest algorithm, or plain
+input data. For Cloud KMS keys without a digest type ("Raw PKCS#1" keys),
+arbitrary input is accepted.
 
 Compatibility                | Compatible With
 ---------------------------- | ---------------
 PKCS #11 Functions           | [`C_Sign`][C_Sign], [`C_Verify`][C_Verify]
-PKCS #11 Mechanism           | [`CKM_RSA_PKCS`][CKM_RSA_PKCS]
+PKCS #11 Mechanism           | [`CKM_RSA_PKCS`][CKM_RSA_PKCS], `CKM_RSA_PKCS_SHA256`, `CKM_RSA_PKCS_SHA512`
+PKCS #11 Mechanism Parameter | None
+Cloud KMS Algorithm          | [`RSA_SIGN_PKCS1_2048_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PKCS1_3072_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PKCS1_4096_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PKCS1_4096_SHA512`][kms-rsa-sign-algorithms], [`RSA_SIGN_RAW_PKCS1_2048_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_RAW_PKCS1_3072_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_RAW_PKCS1_4096_SHA256`][kms-rsa-sign-algorithms]
+
+Compatibility                | Compatible With
+---------------------------- | ---------------
+PKCS #11 Functions           | [`C_SignUpdate`][C_SignUpdate], [`C_SignFinal`][C_SignFinal], [`C_VerifyUpdate`][C_VerifyUpdate], [`C_VerifyFinal`][C_VerifyFinal]
+PKCS #11 Mechanism           | `CKM_RSA_PKCS_SHA256`, `CKM_RSA_PKCS_SHA512`
 PKCS #11 Mechanism Parameter | None
 Cloud KMS Algorithm          | [`RSA_SIGN_PKCS1_2048_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PKCS1_3072_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PKCS1_4096_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PKCS1_4096_SHA512`][kms-rsa-sign-algorithms], [`RSA_SIGN_RAW_PKCS1_2048_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_RAW_PKCS1_3072_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_RAW_PKCS1_4096_SHA256`][kms-rsa-sign-algorithms]
 
 ### RSA-PSS Signing and Verification
 
-The library may be used for RSASSA-PSS signing and verification. The expected
-input for a signing or verification operation is a message digest of the
-appropriate length for the Cloud KMS algorithm.
+The library may be used for RSASSA-PSS single-part or multi-part signing and
+verification. The expected input for a signing or verification operation varies
+by mechanism and is either a message digest of the appropriate length for the
+Cloud KMS algorithm, or plain input data.
 
 Compatibility                | Compatible With
 ---------------------------- | ---------------
@@ -301,6 +324,72 @@ PKCS #11 Mechanism           | [`CKM_RSA_PKCS_PSS`][CKM_RSA_PKCS_PSS]
 PKCS #11 Mechanism Parameter | [`CK_RSA_PKCS_PSS_PARAMS`][CK_RSA_PKCS_PSS_PARAMS]
 Cloud KMS Algorithm          | [`RSA_SIGN_PSS_2048_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PSS_3072_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PSS_4096_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PSS_4096_SHA512`][kms-rsa-sign-algorithms]
 
+Compatibility                | Compatible With
+---------------------------- | ---------------
+PKCS #11 Functions           | [`C_SignUpdate`][C_SignUpdate], [`C_SignFinal`][C_SignFinal], [`C_VerifyUpdate`][C_VerifyUpdate], [`C_VerifyFinal`][C_VerifyFinal]
+PKCS #11 Mechanism           | `CKM_RSA_PKCS_PSS_SHA256`, `CKM_RSA_PKCS_PSS_SHA512`
+PKCS #11 Mechanism Parameter | [`CK_RSA_PKCS_PSS_PARAMS`][CK_RSA_PKCS_PSS_PARAMS]
+Cloud KMS Algorithm          | [`RSA_SIGN_PSS_2048_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PSS_3072_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PSS_4096_SHA256`][kms-rsa-sign-algorithms], [`RSA_SIGN_PSS_4096_SHA512`][kms-rsa-sign-algorithms]
+
+### Generic Secret Key Generation
+
+The library may be used to create new generic secret keys (symmetric keys). See
+the [function notes](#functions) for `C_GenerateKey` for invocation
+requirements.
+
+Compatibility                 | Compatible With
+----------------------------- | ---------------
+PKCS #11 Function             | [`C_GenerateKey`][C_GenerateKey]
+PKCS #11 Mechanism            | [`CKM_GENERIC_SECRET_KEY_GEN`][CKM_GENERIC_SECRET_KEY_GEN], [`CKM_AES_KEY_GEN`][CKM_AES_KEY_GEN]
+PKCS #11 Mechanism Parameters | None
+Cloud KMS Algorithm           | `AES_128_GCM`, `AES_256_GCM`, `AES_128_CTR`, `AES_256_CTR`, `AES_128_CBC`, `AES_256_CBC`, [`HMAC_SHA1`][kms-mac-algorithms], [`HMAC_SHA224`][kms-mac-algorithms], [`HMAC_SHA256`][kms-mac-algorithms], [`HMAC_SHA384`][kms-mac-algorithms], [`HMAC_SHA512`][kms-mac-algorithms]
+
+### AES-CBC Encryption and Decryption
+
+The library may be used for AES encryption or decryption.
+
+Compatibility                | Compatible With
+---------------------------- | ---------------
+PKCS #11 Functions           | [`C_Encrypt`][C_Encrypt], [`C_EncryptUpdate`][C_EncryptUpdate], [`C_EncryptFinal`][C_EncryptFinal], [`C_Decrypt`][C_Decrypt], [`C_DecryptUpdate`][C_DecryptUpdate], [`C_DecryptFinal`][C_DecryptFinal]
+PKCS #11 Mechanism           | [`CKM_AES_CBC`][CKM_AES_CBC], [`CKM_AES_CBC_PAD`][CKM_AES_CBC_PAD]
+PKCS #11 Mechanism Parameter | CK_BYTE (initialization vector)
+Cloud KMS Algorithm          | `AES_128_CBC`, `AES_256_CBC`
+
+### AES-CTR Encryption and Decryption
+
+The library may be used for AES encryption or decryption.
+
+Compatibility                | Compatible With
+---------------------------- | ---------------
+PKCS #11 Functions           | [`C_Encrypt`][C_Encrypt], [`C_EncryptUpdate`][C_EncryptUpdate], [`C_EncryptFinal`][C_EncryptFinal], [`C_Decrypt`][C_Decrypt], [`C_DecryptUpdate`][C_DecryptUpdate], [`C_DecryptFinal`][C_DecryptFinal]
+PKCS #11 Mechanism           | [`CKM_AES_CTR`][CKM_AES_CTR]
+PKCS #11 Mechanism Parameter | [`CK_AES_CTR_PARAMS`][CK_AES_CTR_PARAMS]
+Cloud KMS Algorithm          | `AES_128_CTR`, `AES_256_CTR`
+
+### AES-GCM Encryption and Decryption
+
+The library may be used for AES encryption or decryption.
+
+Compatibility                | Compatible With
+---------------------------- | ---------------
+PKCS #11 Functions           | [`C_Encrypt`][C_Encrypt], [`C_EncryptUpdate`][C_EncryptUpdate], [`C_EncryptFinal`][C_EncryptFinal], [`C_Decrypt`][C_Decrypt], [`C_DecryptUpdate`][C_DecryptUpdate], [`C_DecryptFinal`][C_DecryptFinal]
+PKCS #11 Mechanism           | `CKM_CLOUDKMS_AES_GCM`
+PKCS #11 Mechanism Parameter | [`CK_GCM_PARAMS`][CK_GCM_PARAMS]
+Cloud KMS Algorithm          | `AES_128_GCM`, `AES_256_GCM`
+
+### MAC Signing and Verification
+
+The library may be used for MAC single-part or multi-part signing and
+verification. The expected input for a signing or verification is plain input
+data.
+
+Compatibility                | Compatible With
+---------------------------- | ---------------
+PKCS #11 Functions           | [`C_Sign`][C_Sign], [`C_SignUpdate`][C_SignUpdate], [`C_SignFinal`][C_SignFinal], [`C_Verify`][C_Verify], [`C_VerifyUpdate`][C_VerifyUpdate], [`C_VerifyFinal`][C_VerifyFinal]
+PKCS #11 Mechanism           | [`CKM_SHA1_HMAC`][CKM_SHA1_HMAC], [`CKM_SHA224_HMAC`][CKM_SHA224_HMAC], [`CKM_SHA256_HMAC`][CKM_SHA256_HMAC], [`CKM_SHA384_HMAC`][CKM_SHA384_HMAC], [`CKM_SHA512_HMAC`][CKM_SHA512_HMAC]
+PKCS #11 Mechanism Parameter | None
+Cloud KMS Algorithm           | [`HMAC_SHA1`][kms-mac-algorithms], [`HMAC_SHA224`][kms-mac-algorithms], [`HMAC_SHA256`][kms-mac-algorithms], [`HMAC_SHA384`][kms-mac-algorithms], [`HMAC_SHA512`][kms-mac-algorithms]
+
 ## Limitations
 
 ### Key purpose, protection level, and state
@@ -308,7 +397,8 @@ Cloud KMS Algorithm          | [`RSA_SIGN_PSS_2048_SHA256`][kms-rsa-sign-algorit
 To use the library to act on a CryptoKeyVersion, the CryptoKeyVersion must meet
 these characteristics:
 
-*   The purpose for the CryptoKey is `ASYMMETRIC_SIGN` or `ASYMMETRIC_DECRYPT`.
+*   The purpose for the CryptoKey is `ASYMMETRIC_SIGN`, `ASYMMETRIC_DECRYPT`,
+    `RAW_ENCRYPT_DECRYPT`, or `MAC`.
 *   The protection level for the CryptoKeyVersion is `HSM`.
 *   The CryptoKeyVersion is in state `ENABLED`.
 
@@ -331,23 +421,19 @@ This means that:
     stale if `refresh_interval_secs` is unspecified, or else will take up to
     that amount of time to become up-to-date in the library.
 
-## Release Notes
+## Other notes
 
-### v1.1
+Keys can be located with the `CKA_LABEL` attribute, which is the Cloud KMS
+CryptoKey identifier, or with the `CKA_ID` attribute, which is the full Cloud
+KMS CryptoKeyVersion name. As an example, a key might have a `CKA_ID` of
+`projects/some_project/locations/some_location/keyRings/some_keyring/cryptoKeys/some_ck/cryptoKeyVersions/1`
+and a `CKA_LABEL` of `some_ck`.  Note that some tools including `pkcs11-tool`
+hex-encode `CKA_ID` attribute values, so they seem different at first.
 
-The following changes are included in the v1.1 (March 2022) release:
-
-*   The value for `CKA_EC_POINT` was corrected.
-*   The configuration option `experimental_generate_certs` is now fully
-    supported, and has been renamed to `generate_certs`.
-*   Google now supplies a version of the library where the included BoringSSL
-    has been built in FIPS mode.
-*   The configuration option `experimental_require_fips_mode` is now fully
-    supported, and has been renamed to `require_fips_mode`.
-*   For `CK_RSA_PKCS_OAEP_PARAMS.source`, the value `0` is treated as
-    meaning "no label" for compatibility purposes.
-*   The library must now be built with Bazel v4.2.1.
-*   Several internal dependencies were updated.
+For multi-part crypto operations, the library caches input data and parameters
+in memory (up to a max buffer, depending on the specific crypto operation and
+algorithm), before sending the request to Cloud KMS. This is required for these
+operations to fit in the current APIs exposed by Cloud KMS.
 
 [gcp-authn-getting-started]: https://cloud.google.com/docs/authentication/getting-started
 [gcp-authn-prod]: https://cloud.google.com/docs/authentication/production
@@ -355,6 +441,7 @@ The following changes are included in the v1.1 (March 2022) release:
 [java-p11-guide]: https://docs.oracle.com/javase/8/docs/technotes/guides/security/p11guide.html
 [kms-asymmetric-encrypt-algorithms]: https://cloud.google.com/kms/docs/algorithms#asymmetric_encryption_algorithms
 [kms-ec-algorithms]: https://cloud.google.com/kms/docs/algorithms#elliptic_curve_signing_algorithms
+[kms-mac-algorithms]: https://cloud.google.com/kms/docs/algorithms#mac_signing_algorithms
 [kms-permissions-and-roles]: https://cloud.google.com/kms/docs/reference/permissions-and-roles
 [kms-rsa-sign-algorithms]: https://cloud.google.com/kms/docs/algorithms#rsa_signing_algorithms
 [msvc-redistributable]: https://aka.ms/vs/16/release/vc_redist.x64.exe
@@ -428,11 +515,23 @@ The following changes are included in the v1.1 (March 2022) release:
 [C_GenerateRandom]: http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/errata01/os/pkcs11-base-v2.40-errata01-os-complete.html#_Toc323024163
 [C_GetFunctionStatus]: http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/errata01/os/pkcs11-base-v2.40-errata01-os-complete.html#_Toc323024165
 [C_CancelFunction]: http://docs.oasis-open.org/pkcs11/pkcs11-base/v2.40/errata01/os/pkcs11-base-v2.40-errata01-os-complete.html#_Toc323024166
+[CK_AES_CTR_PARAMS]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cos01/pkcs11-curr-v2.40-cos01.html#_Toc228894707
+[CK_GCM_PARAMS]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228894714
 [CK_RSA_PKCS_OAEP_PARAMS]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228807161
 [CK_RSA_PKCS_PSS_PARAMS]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228807164
+[CKM_AES_CTR]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cos01/pkcs11-curr-v2.40-cos01.html#_Toc228894705
+[CKM_AES_CBC]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cos01/pkcs11-curr-v2.40-cos01.html#_Toc228894699
+[CKM_AES_CBC_PAD]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cos01/pkcs11-curr-v2.40-cos01.html#_Toc228894700
+[CKM_AES_KEY_GEN]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cs01/pkcs11-curr-v2.40-cs01.html#_Toc228894697
 [CKM_EC_KEY_PAIR_GEN]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228894664
 [CKM_ECDSA]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc441850452
+[CKM_GENERIC_SECRET_KEY_GEN]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cs01/pkcs11-curr-v2.40-cs01.html#_Toc228894689
 [CKM_RSA_PKCS]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228894635
 [CKM_RSA_PKCS_KEY_PAIR_GEN]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228894633
 [CKM_RSA_PKCS_OAEP]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228894637
 [CKM_RSA_PKCS_PSS]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/errata01/os/pkcs11-curr-v2.40-errata01-os-complete.html#_Toc228894639
+[CKM_SHA1_HMAC]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cs01/pkcs11-curr-v2.40-cs01.html#_Toc228894748
+[CKM_SHA224_HMAC]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cs01/pkcs11-curr-v2.40-cs01.html#_Toc228894754
+[CKM_SHA256_HMAC]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cs01/pkcs11-curr-v2.40-cs01.html#_Toc228894760
+[CKM_SHA384_HMAC]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cs01/pkcs11-curr-v2.40-cs01.html#_Toc228894766
+[CKM_SHA512_HMAC]: http://docs.oasis-open.org/pkcs11/pkcs11-curr/v2.40/cs01/pkcs11-curr-v2.40-cs01.html#_Toc228894772
